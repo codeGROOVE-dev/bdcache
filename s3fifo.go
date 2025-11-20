@@ -60,24 +60,26 @@ func newS3FIFO[K comparable, V any](capacity int) *s3fifo[K, V] {
 // get retrieves a value from the cache.
 func (c *s3fifo[K, V]) get(key K) (V, bool) {
 	c.mu.Lock()
-	defer c.mu.Unlock()
-
 	ent, ok := c.items[key]
 	if !ok {
+		c.mu.Unlock()
 		var zero V
 		return zero, false
 	}
 
-	// Check expiration
+	// Check expiration (skip time.Now() if no expiry set)
 	if !ent.expiry.IsZero() && time.Now().After(ent.expiry) {
+		c.mu.Unlock()
 		var zero V
 		return zero, false
 	}
 
 	// Increment frequency counter (used during eviction)
 	ent.freq++
+	val := ent.value
+	c.mu.Unlock()
 
-	return ent.value, true
+	return val, true
 }
 
 // set adds or updates a value in the cache.

@@ -1,5 +1,7 @@
 # bdcache - Big Dumb Cache
 
+<img src="media/logo-small.png" alt="bdcache logo" width="256" align="right">
+
 [![Go Reference](https://pkg.go.dev/badge/github.com/codeGROOVE-dev/bdcache.svg)](https://pkg.go.dev/github.com/codeGROOVE-dev/bdcache)
 [![Go Report Card](https://goreportcard.com/badge/github.com/codeGROOVE-dev/bdcache)](https://goreportcard.com/report/github.com/codeGROOVE-dev/bdcache)
 [![License](https://img.shields.io/badge/License-Apache%202.0-blue.svg)](https://opensource.org/licenses/Apache-2.0)
@@ -10,7 +12,6 @@ Simple, fast, secure Go cache with [S3-FIFO eviction](https://s3fifo.com/) - bet
 
 - **S3-FIFO Algorithm** - [Superior cache hit rates](https://s3fifo.com/) compared to LRU/LFU
 - **Fast** - ~20ns per operation, zero allocations
-- **Secure** - Hardened input validation, no path traversal
 - **Reliable** - Memory cache always works, even if persistence fails
 - **Smart Persistence** - Local files for dev, Cloud Datastore for Cloud Run
 - **Minimal Dependencies** - Only one (Cloud Datastore)
@@ -48,9 +49,17 @@ cache, err := bdcache.New[string, User](ctx, bdcache.WithBestStore("myapp"))
 
 ## Performance
 
+Benchmarks from MacBook Pro M4 Max:
+
 ```
-BenchmarkCache_Get_Hit-16      63M ops/sec    19.9 ns/op    0 allocs
-BenchmarkCache_Set-16          57M ops/sec    20.8 ns/op    0 allocs
+Memory-only operations:
+BenchmarkCache_Get_Hit-16      56M ops/sec    17.8 ns/op       0 B/op     0 allocs
+BenchmarkCache_Set-16          56M ops/sec    17.8 ns/op       0 B/op     0 allocs
+
+With file persistence enabled:
+BenchmarkCache_Get_PersistMemoryHit-16    85M ops/sec    11.8 ns/op       0 B/op     0 allocs
+BenchmarkCache_Get_PersistDiskRead-16     73K ops/sec    13.8 µs/op    7921 B/op   178 allocs
+BenchmarkCache_Set_WithPersistence-16      9K ops/sec   112.3 µs/op    2383 B/op    36 allocs
 ```
 
 ## License

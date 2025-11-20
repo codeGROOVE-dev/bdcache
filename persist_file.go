@@ -1,6 +1,7 @@
 package bdcache
 
 import (
+	"bufio"
 	"context"
 	"encoding/gob"
 	"errors"
@@ -10,14 +11,32 @@ import (
 	"path/filepath"
 	"sort"
 	"strings"
+	"sync"
 	"time"
 )
 
 const maxKeyLength = 127 // Maximum key length to avoid filesystem constraints
 
+var (
+	// Pool for bufio.Writer to reduce allocations
+	writerPool = sync.Pool{
+		New: func() any {
+			return bufio.NewWriterSize(nil, 4096)
+		},
+	}
+	// Pool for bufio.Reader to reduce allocations
+	readerPool = sync.Pool{
+		New: func() any {
+			return bufio.NewReaderSize(nil, 4096)
+		},
+	}
+)
+
 // filePersist implements PersistenceLayer using local files with gob encoding.
 type filePersist[K comparable, V any] struct {
-	dir string
+	dir          string
+	subdirsMu    sync.RWMutex
+	subdirsMade  map[string]bool // Cache of created subdirectories
 }
 
 // ValidateKey checks if a key is valid for file persistence.
@@ -69,7 +88,10 @@ func newFilePersist[K comparable, V any](cacheID string) (*filePersist[K, V], er
 
 	slog.Debug("initialized file persistence", "dir", dir)
 
-	return &filePersist[K, V]{dir: dir}, nil
+	return &filePersist[K, V]{
+		dir:         dir,
+		subdirsMade: make(map[string]bool),
+	}, nil
 }
 
 // keyToFilename converts a cache key to a filename with squid-style directory layout.
@@ -105,8 +127,13 @@ func (f *filePersist[K, V]) Load(ctx context.Context, key K) (V, time.Time, bool
 		}
 	}()
 
+	// Get reader from pool and reset it for this file
+	reader := readerPool.Get().(*bufio.Reader)
+	reader.Reset(file)
+	defer readerPool.Put(reader)
+
 	var entry Entry[K, V]
-	dec := gob.NewDecoder(file)
+	dec := gob.NewDecoder(reader)
 	if err := dec.Decode(&entry); err != nil {
 		// File corrupted, remove it
 		if err := os.Remove(filename); err != nil && !os.IsNotExist(err) {
@@ -129,10 +156,22 @@ func (f *filePersist[K, V]) Load(ctx context.Context, key K) (V, time.Time, bool
 // Store saves a value to a file.
 func (f *filePersist[K, V]) Store(ctx context.Context, key K, value V, expiry time.Time) error {
 	filename := filepath.Join(f.dir, f.keyToFilename(key))
+	subdir := filepath.Dir(filename)
 
-	// Create subdirectory if it doesn't exist (for squid-style layout)
-	if err := os.MkdirAll(filepath.Dir(filename), 0o750); err != nil {
-		return fmt.Errorf("create subdirectory: %w", err)
+	// Check if subdirectory already created (cache to avoid syscalls)
+	f.subdirsMu.RLock()
+	exists := f.subdirsMade[subdir]
+	f.subdirsMu.RUnlock()
+
+	if !exists {
+		// Create subdirectory if needed
+		if err := os.MkdirAll(subdir, 0o750); err != nil {
+			return fmt.Errorf("create subdirectory: %w", err)
+		}
+		// Cache that we created it
+		f.subdirsMu.Lock()
+		f.subdirsMade[subdir] = true
+		f.subdirsMu.Unlock()
 	}
 
 	entry := Entry[K, V]{
@@ -149,8 +188,19 @@ func (f *filePersist[K, V]) Store(ctx context.Context, key K, value V, expiry ti
 		return fmt.Errorf("create temp file: %w", err)
 	}
 
-	enc := gob.NewEncoder(file)
+	// Get writer from pool and reset it for this file
+	writer := writerPool.Get().(*bufio.Writer)
+	writer.Reset(file)
+
+	enc := gob.NewEncoder(writer)
 	encErr := enc.Encode(entry)
+	if encErr == nil {
+		encErr = writer.Flush() // Ensure buffered data is written
+	}
+
+	// Return writer to pool
+	writerPool.Put(writer)
+
 	closeErr := file.Close()
 
 	if encErr != nil {
@@ -227,10 +277,15 @@ func (f *filePersist[K, V]) LoadRecent(ctx context.Context, limit int) (<-chan E
 				return nil
 			}
 
+			// Get reader from pool and reset it for this file
+			reader := readerPool.Get().(*bufio.Reader)
+			reader.Reset(file)
+
 			var e Entry[K, V]
-			dec := gob.NewDecoder(file)
+			dec := gob.NewDecoder(reader)
 			if err := dec.Decode(&e); err != nil {
 				slog.Warn("failed to decode cache file", "file", path, "error", err)
+				readerPool.Put(reader)
 				if err := file.Close(); err != nil {
 					slog.Debug("failed to close file after decode error", "file", path, "error", err)
 				}
@@ -239,6 +294,7 @@ func (f *filePersist[K, V]) LoadRecent(ctx context.Context, limit int) (<-chan E
 				}
 				return nil
 			}
+			readerPool.Put(reader)
 			if err := file.Close(); err != nil {
 				slog.Debug("failed to close file", "file", path, "error", err)
 			}

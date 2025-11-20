@@ -772,7 +772,7 @@ func BenchmarkCache_Set_WithPersistence(b *testing.B) {
 	}
 }
 
-func BenchmarkCache_Get_WithPersistence(b *testing.B) {
+func BenchmarkCache_Get_PersistMemoryHit(b *testing.B) {
 	ctx := context.Background()
 	cacheID := "bench-persist-get-" + time.Now().Format("20060102150405")
 	cache, err := New[int, int](ctx, WithLocalStore(cacheID))
@@ -785,7 +785,7 @@ func BenchmarkCache_Get_WithPersistence(b *testing.B) {
 		}
 	}()
 
-	// Populate cache
+	// Populate cache with keys 0-999
 	for i := range 1000 {
 		if err := cache.Set(ctx, i, i, 0); err != nil {
 			b.Fatalf("Set: %v", err)
@@ -794,7 +794,43 @@ func BenchmarkCache_Get_WithPersistence(b *testing.B) {
 
 	b.ResetTimer()
 	for i := range b.N {
-		// Most hits from memory, occasional disk miss
-		_, _, _ = cache.Get(ctx, i%10000) //nolint:errcheck // Benchmark code
+		// All hits from memory (keys 0-999)
+		_, _, _ = cache.Get(ctx, i%1000) //nolint:errcheck // Benchmark code
+	}
+}
+
+func BenchmarkCache_Get_PersistDiskRead(b *testing.B) {
+	ctx := context.Background()
+	cacheID := "bench-persist-disk-" + time.Now().Format("20060102150405")
+
+	// Create cache with small memory capacity to force disk reads
+	cache, err := New[int, int](ctx, WithLocalStore(cacheID), WithMemorySize(10))
+	if err != nil {
+		b.Fatalf("New: %v", err)
+	}
+	defer func() {
+		if err := cache.Close(); err != nil {
+			b.Logf("Close error: %v", err)
+		}
+	}()
+
+	// Populate cache with 100 items (memory only holds 10)
+	for i := range 100 {
+		if err := cache.Set(ctx, i, i, 0); err != nil {
+			b.Fatalf("Set: %v", err)
+		}
+	}
+
+	// Force eviction of first 90 items from memory
+	for i := 100; i < 110; i++ {
+		if err := cache.Set(ctx, i, i, 0); err != nil {
+			b.Fatalf("Set: %v", err)
+		}
+	}
+
+	b.ResetTimer()
+	for i := range b.N {
+		// Read evicted items from disk (keys 0-89)
+		_, _, _ = cache.Get(ctx, i%90) //nolint:errcheck // Benchmark code
 	}
 }
