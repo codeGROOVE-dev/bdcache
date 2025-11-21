@@ -250,3 +250,160 @@ func TestNewDatastorePersist_Integration(t *testing.T) {
 		t.Log("New succeeded unexpectedly - might have credentials")
 	}
 }
+
+func TestDatastorePersist_ValidateKey(t *testing.T) {
+	ctx := context.Background()
+
+	// Create a persister (may fail without credentials, but we can still test ValidateKey on the type)
+	dp, err := New[string, int](ctx, "test-cache")
+	if err != nil {
+		// Can't create client, but we can still test the validation logic
+		t.Skip("Skipping: no datastore access")
+	}
+	defer dp.Close()
+
+	tests := []struct {
+		name    string
+		key     string
+		wantErr bool
+	}{
+		{"empty key", "", true},
+		{"valid short key", "key123", false},
+		{"valid long key", string(make([]byte, 1500)), false},
+		{"key too long", string(make([]byte, 1501)), true},
+		{"valid with special chars", "key:123-test", false},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			err := dp.ValidateKey(tt.key)
+			if (err != nil) != tt.wantErr {
+				t.Errorf("ValidateKey() error = %v, wantErr %v", err, tt.wantErr)
+			}
+		})
+	}
+}
+
+func TestDatastorePersist_Location(t *testing.T) {
+	ctx := context.Background()
+
+	dp, err := New[string, int](ctx, "test-cache")
+	if err != nil {
+		t.Skip("Skipping: no datastore access")
+	}
+	defer dp.Close()
+
+	loc := dp.Location("mykey")
+	if loc == "" {
+		t.Error("Location() should return non-empty string")
+	}
+
+	// Should contain the kind and key
+	if loc != "CacheEntry/mykey" {
+		t.Errorf("Location() = %q; want %q", loc, "CacheEntry/mykey")
+	}
+}
+
+func TestDatastorePersist_LoadRecent(t *testing.T) {
+	skipIfNoDatastore(t)
+
+	ctx := context.Background()
+	dp, err := New[string, int](ctx, "test-cache")
+	if err != nil {
+		t.Fatalf("New: %v", err)
+	}
+	defer dp.Close()
+
+	// Store multiple entries
+	for i := range 5 {
+		key := "test-" + string(rune('a'+i))
+		if err := dp.Store(ctx, key, i, time.Time{}); err != nil {
+			t.Fatalf("Store %s: %v", key, err)
+		}
+	}
+
+	// Load recent with limit
+	entryCh, errCh := dp.LoadRecent(ctx, 3)
+
+	loaded := 0
+	for range entryCh {
+		loaded++
+	}
+
+	// Check for errors
+	select {
+	case err := <-errCh:
+		if err != nil {
+			t.Fatalf("LoadRecent error: %v", err)
+		}
+	default:
+	}
+
+	// Should have loaded at most 3 entries
+	if loaded > 3 {
+		t.Errorf("loaded %d entries; want at most 3", loaded)
+	}
+
+	// Cleanup
+	for i := range 5 {
+		key := "test-" + string(rune('a'+i))
+		dp.Delete(ctx, key)
+	}
+}
+
+func TestDatastorePersist_Cleanup(t *testing.T) {
+	skipIfNoDatastore(t)
+
+	ctx := context.Background()
+	dp, err := New[string, int](ctx, "test-cache")
+	if err != nil {
+		t.Fatalf("New: %v", err)
+	}
+	defer dp.Close()
+
+	// Store entries with different expiry times
+	past := time.Now().Add(-2 * time.Hour)
+	future := time.Now().Add(2 * time.Hour)
+
+	dp.Store(ctx, "expired-1", 1, past)
+	dp.Store(ctx, "expired-2", 2, past)
+	dp.Store(ctx, "valid-1", 3, future)
+	dp.Store(ctx, "no-expiry", 4, time.Time{})
+
+	// Cleanup entries older than 1 hour
+	count, err := dp.Cleanup(ctx, 1*time.Hour)
+	if err != nil {
+		t.Fatalf("Cleanup: %v", err)
+	}
+
+	// Should have cleaned up 2 expired entries
+	if count != 2 {
+		t.Errorf("Cleanup count = %d; want 2", count)
+	}
+
+	// Cleanup remaining test entries
+	dp.Delete(ctx, "valid-1")
+	dp.Delete(ctx, "no-expiry")
+}
+
+func TestDatastorePersist_CleanupEmpty(t *testing.T) {
+	skipIfNoDatastore(t)
+
+	ctx := context.Background()
+	dp, err := New[string, int](ctx, "test-cache")
+	if err != nil {
+		t.Fatalf("New: %v", err)
+	}
+	defer dp.Close()
+
+	// Cleanup with no expired entries
+	count, err := dp.Cleanup(ctx, 1*time.Hour)
+	if err != nil {
+		t.Fatalf("Cleanup: %v", err)
+	}
+
+	// Should find 0 entries to clean
+	if count != 0 {
+		t.Logf("Cleanup count = %d (found existing expired entries)", count)
+	}
+}

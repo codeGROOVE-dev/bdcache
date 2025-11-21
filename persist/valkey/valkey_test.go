@@ -30,6 +30,86 @@ func skipIfNoValkey(t *testing.T) {
 	}
 }
 
+// Unit tests that don't require Valkey connection
+
+func TestValkey_New_InvalidCacheID(t *testing.T) {
+	ctx := context.Background()
+
+	// Empty cacheID should fail
+	_, err := New[string, int](ctx, "", "localhost:6379")
+	if err == nil {
+		t.Error("New() should fail with empty cacheID")
+	}
+}
+
+func TestValkey_ValidateKey(t *testing.T) {
+	skipIfNoValkey(t)
+
+	ctx := context.Background()
+	p, err := New[string, int](ctx, "test-validate", "localhost:6379")
+	if err != nil {
+		t.Skip("Valkey not available")
+	}
+	defer p.Close()
+
+	tests := []struct {
+		name    string
+		key     string
+		wantErr bool
+	}{
+		{"empty key", "", true},
+		{"valid key", "key123", false},
+		{"valid long key", string(make([]byte, 512)), false},
+		{"key too long", string(make([]byte, 513)), true},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			err := p.ValidateKey(tt.key)
+			if (err != nil) != tt.wantErr {
+				t.Errorf("ValidateKey() error = %v, wantErr %v", err, tt.wantErr)
+			}
+		})
+	}
+}
+
+func TestValkey_Location(t *testing.T) {
+	skipIfNoValkey(t)
+
+	ctx := context.Background()
+	p, err := New[string, int](ctx, "testapp", "localhost:6379")
+	if err != nil {
+		t.Skip("Valkey not available")
+	}
+	defer p.Close()
+
+	loc := p.Location("mykey")
+	expected := "testapp:mykey"
+	if loc != expected {
+		t.Errorf("Location() = %q; want %q", loc, expected)
+	}
+}
+
+func TestValkey_Cleanup(t *testing.T) {
+	skipIfNoValkey(t)
+
+	ctx := context.Background()
+	p, err := New[string, int](ctx, "test-cleanup", "localhost:6379")
+	if err != nil {
+		t.Skip("Valkey not available")
+	}
+	defer p.Close()
+
+	// Cleanup always returns 0 since Valkey handles TTL automatically
+	count, err := p.Cleanup(ctx, time.Hour)
+	if err != nil {
+		t.Errorf("Cleanup() error = %v", err)
+	}
+	if count != 0 {
+		t.Errorf("Cleanup() count = %d; want 0 (Valkey handles TTL automatically)", count)
+	}
+}
+
 func TestValkeyPersist_StoreLoad(t *testing.T) {
 	skipIfNoValkey(t)
 
@@ -745,5 +825,108 @@ func TestValkeyPersist_KeyValidation(t *testing.T) {
 	err = p.ValidateKey("")
 	if err == nil {
 		t.Error("expected error for empty key")
+	}
+}
+
+func TestValkeyPersist_LoadRecentWithLimit(t *testing.T) {
+	skipIfNoValkey(t)
+
+	ctx := context.Background()
+	addr := os.Getenv("VALKEY_ADDR")
+	if addr == "" {
+		addr = "localhost:6379"
+	}
+
+	p, err := New[string, int](ctx, "test-cache-limit", addr)
+	if err != nil {
+		t.Fatalf("New: %v", err)
+	}
+	defer func() {
+		if err := p.Close(); err != nil {
+			t.Logf("Close error: %v", err)
+		}
+	}()
+
+	// Store 10 entries
+	for i := 0; i < 10; i++ {
+		key := fmt.Sprintf("limit-key-%d", i)
+		if err := p.Store(ctx, key, i, time.Time{}); err != nil {
+			t.Fatalf("Store %s: %v", key, err)
+		}
+	}
+
+	// Load with limit of 5
+	entryCh, errCh := p.LoadRecent(ctx, 5)
+
+	loaded := 0
+	for range entryCh {
+		loaded++
+	}
+
+	// Check for errors
+	select {
+	case err := <-errCh:
+		if err != nil {
+			t.Fatalf("LoadRecent error: %v", err)
+		}
+	default:
+	}
+
+	// Should have loaded at most 5 entries
+	if loaded > 5 {
+		t.Errorf("loaded %d entries; want at most 5", loaded)
+	}
+	if loaded < 5 {
+		t.Errorf("loaded %d entries; want at least 5", loaded)
+	}
+
+	// Cleanup
+	for i := 0; i < 10; i++ {
+		key := fmt.Sprintf("limit-key-%d", i)
+		if err := p.Delete(ctx, key); err != nil {
+			t.Logf("Delete error: %v", err)
+		}
+	}
+}
+
+func TestValkeyPersist_LoadRecentEmpty(t *testing.T) {
+	skipIfNoValkey(t)
+
+	ctx := context.Background()
+	addr := os.Getenv("VALKEY_ADDR")
+	if addr == "" {
+		addr = "localhost:6379"
+	}
+
+	p, err := New[string, int](ctx, "test-cache-empty-recent", addr)
+	if err != nil {
+		t.Fatalf("New: %v", err)
+	}
+	defer func() {
+		if err := p.Close(); err != nil {
+			t.Logf("Close error: %v", err)
+		}
+	}()
+
+	// Load from empty cache
+	entryCh, errCh := p.LoadRecent(ctx, 0)
+
+	loaded := 0
+	for range entryCh {
+		loaded++
+	}
+
+	// Check for errors
+	select {
+	case err := <-errCh:
+		if err != nil {
+			t.Fatalf("LoadRecent error: %v", err)
+		}
+	default:
+	}
+
+	// Should have loaded 0 entries
+	if loaded != 0 {
+		t.Errorf("loaded %d entries from empty cache; want 0", loaded)
 	}
 }

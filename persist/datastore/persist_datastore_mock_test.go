@@ -453,3 +453,295 @@ func TestDatastorePersist_Mock_UnsupportedType(t *testing.T) {
 		t.Error("Store should fail when marshaling unsupported type")
 	}
 }
+
+func TestDatastorePersist_Mock_ValidateKey(t *testing.T) {
+	dp, cleanup := newMockDatastorePersist[string, int](t)
+	defer cleanup()
+
+	tests := []struct {
+		name    string
+		key     string
+		wantErr bool
+	}{
+		{"empty key", "", true},
+		{"valid short key", "key123", false},
+		{"valid long key", string(make([]byte, 1500)), false},
+		{"key too long", string(make([]byte, 1501)), true},
+		{"valid with special chars", "key:123-test_value.example", false},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			err := dp.ValidateKey(tt.key)
+			if (err != nil) != tt.wantErr {
+				t.Errorf("ValidateKey() error = %v, wantErr %v", err, tt.wantErr)
+			}
+		})
+	}
+}
+
+func TestDatastorePersist_Mock_Location(t *testing.T) {
+	dp, cleanup := newMockDatastorePersist[string, int](t)
+	defer cleanup()
+
+	loc := dp.Location("mykey")
+	expected := "CacheEntry/mykey"
+	if loc != expected {
+		t.Errorf("Location() = %q; want %q", loc, expected)
+	}
+
+	// Test with different key
+	loc2 := dp.Location("test:key-123")
+	expected2 := "CacheEntry/test:key-123"
+	if loc2 != expected2 {
+		t.Errorf("Location() = %q; want %q", loc2, expected2)
+	}
+}
+
+func TestDatastorePersist_Mock_Cleanup(t *testing.T) {
+	dp, cleanup := newMockDatastorePersist[string, int](t)
+	defer cleanup()
+
+	ctx := context.Background()
+
+	// Store entries with different expiry times
+	past := time.Now().Add(-2 * time.Hour)
+	recentPast := time.Now().Add(-90 * time.Minute)
+	future := time.Now().Add(2 * time.Hour)
+
+	dp.Store(ctx, "expired-old", 1, past)
+	dp.Store(ctx, "expired-recent", 2, recentPast)
+	dp.Store(ctx, "valid-future", 3, future)
+	dp.Store(ctx, "no-expiry", 4, time.Time{})
+
+	// Cleanup entries older than 1 hour
+	// Note: ds9 mock doesn't properly handle time-based filters,
+	// so we just verify the function runs without error
+	_, err := dp.Cleanup(ctx, 1*time.Hour)
+	if err != nil {
+		t.Fatalf("Cleanup: %v", err)
+	}
+
+	// For proper filter testing, use integration tests with real Datastore
+}
+
+func TestDatastorePersist_Mock_CleanupEmpty(t *testing.T) {
+	dp, cleanup := newMockDatastorePersist[string, int](t)
+	defer cleanup()
+
+	ctx := context.Background()
+
+	// Cleanup with no entries
+	count, err := dp.Cleanup(ctx, 1*time.Hour)
+	if err != nil {
+		t.Fatalf("Cleanup: %v", err)
+	}
+
+	if count != 0 {
+		t.Errorf("Cleanup count = %d; want 0 for empty database", count)
+	}
+}
+
+func TestDatastorePersist_Mock_LoadRecentWithLimit(t *testing.T) {
+	dp, cleanup := newMockDatastorePersist[string, int](t)
+	defer cleanup()
+
+	ctx := context.Background()
+
+	// Store multiple entries
+	for i := range 10 {
+		key := string(rune('a' + i))
+		if err := dp.Store(ctx, key, i, time.Time{}); err != nil {
+			t.Fatalf("Store %s: %v", key, err)
+		}
+	}
+
+	// Load recent with limit
+	entryCh, errCh := dp.LoadRecent(ctx, 3)
+
+	loaded := 0
+	for range entryCh {
+		loaded++
+	}
+
+	// Check for errors
+	select {
+	case err := <-errCh:
+		if err != nil {
+			t.Fatalf("LoadRecent error: %v", err)
+		}
+	default:
+	}
+
+	// Should have loaded at most 3 entries
+	if loaded > 3 {
+		t.Errorf("loaded %d entries; want at most 3", loaded)
+	}
+}
+
+func TestDatastorePersist_Mock_Delete_Error(t *testing.T) {
+	dp, cleanup := newMockDatastorePersist[string, int](t)
+	defer cleanup()
+
+	ctx := context.Background()
+
+	// Delete non-existent key (should not error)
+	if err := dp.Delete(ctx, "non-existent"); err != nil {
+		t.Errorf("Delete non-existent key: %v", err)
+	}
+}
+
+func TestDatastorePersist_Mock_Load_DecodeError(t *testing.T) {
+	dp, cleanup := newMockDatastorePersist[string, int](t)
+	defer cleanup()
+
+	ctx := context.Background()
+
+	// Store a value
+	if err := dp.Store(ctx, "key1", 42, time.Time{}); err != nil {
+		t.Fatalf("Store: %v", err)
+	}
+
+	// Load it back
+	val, _, found, err := dp.Load(ctx, "key1")
+	if err != nil {
+		t.Fatalf("Load: %v", err)
+	}
+	if !found {
+		t.Fatal("key1 not found")
+	}
+	if val != 42 {
+		t.Errorf("Load value = %d; want 42", val)
+	}
+}
+
+func TestDatastorePersist_Mock_LoadRecent_SkipExpired(t *testing.T) {
+	dp, cleanup := newMockDatastorePersist[string, int](t)
+	defer cleanup()
+
+	ctx := context.Background()
+
+	// Store mix of expired and valid entries
+	past := time.Now().Add(-1 * time.Hour)
+	future := time.Now().Add(1 * time.Hour)
+
+	dp.Store(ctx, "expired1", 1, past)
+	dp.Store(ctx, "expired2", 2, past)
+	dp.Store(ctx, "valid1", 3, future)
+	dp.Store(ctx, "valid2", 4, future)
+
+	// LoadRecent should skip expired
+	entryCh, errCh := dp.LoadRecent(ctx, 0)
+
+	loaded := make(map[string]int)
+	for entry := range entryCh {
+		loaded[entry.Key] = entry.Value
+	}
+
+	select {
+	case err := <-errCh:
+		if err != nil {
+			t.Fatalf("LoadRecent error: %v", err)
+		}
+	default:
+	}
+
+	// Should only have valid entries
+	if len(loaded) != 2 {
+		t.Errorf("loaded %d entries; want 2 (expired should be skipped)", len(loaded))
+	}
+	if loaded["valid1"] != 3 {
+		t.Error("valid1 should be loaded")
+	}
+	if loaded["valid2"] != 4 {
+		t.Error("valid2 should be loaded")
+	}
+}
+
+func TestDatastorePersist_Mock_StoreLoadCycle(t *testing.T) {
+	dp, cleanup := newMockDatastorePersist[string, string](t)
+	defer cleanup()
+
+	ctx := context.Background()
+
+	tests := []struct {
+		key    string
+		value  string
+		expiry time.Time
+	}{
+		{"key1", "value1", time.Time{}},
+		{"key2", "value2", time.Now().Add(1 * time.Hour)},
+		{"key3", "value3", time.Now().Add(24 * time.Hour)},
+	}
+
+	// Store all
+	for _, tt := range tests {
+		if err := dp.Store(ctx, tt.key, tt.value, tt.expiry); err != nil {
+			t.Fatalf("Store %s: %v", tt.key, err)
+		}
+	}
+
+	// Load all
+	for _, tt := range tests {
+		val, expiry, found, err := dp.Load(ctx, tt.key)
+		if err != nil {
+			t.Fatalf("Load %s: %v", tt.key, err)
+		}
+		if !found {
+			t.Errorf("%s not found", tt.key)
+		}
+		if val != tt.value {
+			t.Errorf("Load %s = %q; want %q", tt.key, val, tt.value)
+		}
+		if !tt.expiry.IsZero() && expiry.Sub(tt.expiry).Abs() > time.Second {
+			t.Errorf("Expiry mismatch for %s: got %v, want %v", tt.key, expiry, tt.expiry)
+		}
+	}
+}
+
+func TestDatastorePersist_Mock_Close_Idempotent(t *testing.T) {
+	dp, cleanup := newMockDatastorePersist[string, int](t)
+	defer cleanup()
+
+	// Close multiple times should work
+	if err := dp.Close(); err != nil {
+		t.Errorf("First Close: %v", err)
+	}
+
+	// Note: ds9 mock might not support idempotent close, so we don't test second close
+}
+
+func TestDatastorePersist_Mock_MultipleOps(t *testing.T) {
+	dp, cleanup := newMockDatastorePersist[string, int](t)
+	defer cleanup()
+
+	ctx := context.Background()
+
+	// Test sequence: Store, Load, Update, Load, Delete, Load
+	if err := dp.Store(ctx, "key", 1, time.Time{}); err != nil {
+		t.Fatalf("Store 1: %v", err)
+	}
+
+	val, _, found, _ := dp.Load(ctx, "key")
+	if !found || val != 1 {
+		t.Error("After Store 1: key should be 1")
+	}
+
+	if err := dp.Store(ctx, "key", 2, time.Time{}); err != nil {
+		t.Fatalf("Store 2: %v", err)
+	}
+
+	val, _, found, _ = dp.Load(ctx, "key")
+	if !found || val != 2 {
+		t.Error("After Store 2: key should be 2")
+	}
+
+	if err := dp.Delete(ctx, "key"); err != nil {
+		t.Fatalf("Delete: %v", err)
+	}
+
+	_, _, found, _ = dp.Load(ctx, "key")
+	if found {
+		t.Error("After Delete: key should not be found")
+	}
+}

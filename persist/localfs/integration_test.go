@@ -322,3 +322,499 @@ func TestFilePersist_Store_CompleteFlow(t *testing.T) {
 		t.Errorf("expiry = %v; want ~%v", loadedExpiry, expiry)
 	}
 }
+
+func TestFilePersist_New_Errors(t *testing.T) {
+	tests := []struct {
+		name     string
+		cacheID  string
+		wantErr  bool
+	}{
+		{"empty cacheID", "", true},
+		{"path traversal ..", "../foo", true},
+		{"path traversal with slash", "foo/bar", true},
+		{"path traversal backslash", "foo\\bar", true},
+		{"null byte", "foo\x00bar", true},
+		{"valid alphanumeric", "myapp123", false},
+		{"valid with dash", "my-app", false},
+		{"valid with underscore", "my_app", false},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			dir := t.TempDir()
+			_, err := New[string, int](tt.cacheID, dir)
+			if (err != nil) != tt.wantErr {
+				t.Errorf("New() error = %v, wantErr %v", err, tt.wantErr)
+			}
+		})
+	}
+}
+
+func TestFilePersist_ValidateKey(t *testing.T) {
+	dir := t.TempDir()
+	fp, err := New[string, int]("test", dir)
+	if err != nil {
+		t.Fatalf("New: %v", err)
+	}
+	defer fp.Close()
+
+	// Create a valid 127-character key
+	validMaxKey := make([]byte, 127)
+	for i := range validMaxKey {
+		validMaxKey[i] = 'a'
+	}
+
+	tests := []struct {
+		name    string
+		key     string
+		wantErr bool
+	}{
+		{"valid short key", "key123", false},
+		{"valid with dash", "key-123", false},
+		{"valid with underscore", "key_123", false},
+		{"valid with period", "key.123", false},
+		{"valid with colon", "key:123", false},
+		{"key at max length", string(validMaxKey), false},
+		{"key too long", string(make([]byte, 128)), true},
+		{"key with space", "my key", true},
+		{"key with unicode", "key-日本語", true},
+		{"key with slash", "key/123", true},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			err := fp.ValidateKey(tt.key)
+			if (err != nil) != tt.wantErr {
+				t.Errorf("ValidateKey() error = %v, wantErr %v", err, tt.wantErr)
+			}
+		})
+	}
+}
+
+func TestFilePersist_Cleanup(t *testing.T) {
+	dir := t.TempDir()
+	fp, err := New[string, int]("test", dir)
+	if err != nil {
+		t.Fatalf("New: %v", err)
+	}
+	defer fp.Close()
+
+	ctx := context.Background()
+
+	// Store items with different expiry times
+	// Cleanup deletes entries where Expiry < (now - maxAge)
+	past := time.Now().Add(-2 * time.Hour)           // Will be cleaned up (< now - 1h)
+	recentPast := time.Now().Add(-90 * time.Minute)  // Just outside 1h window, should be cleaned
+	recentFuture := time.Now().Add(30 * time.Minute) // Future expiry, should stay
+	future := time.Now().Add(2 * time.Hour)          // Far future, should stay
+
+	fp.Store(ctx, "expired-old", 1, past)
+	fp.Store(ctx, "expired-recent", 2, recentPast)
+	fp.Store(ctx, "valid-soon", 3, recentFuture)
+	fp.Store(ctx, "valid-future", 4, future)
+	fp.Store(ctx, "no-expiry", 5, time.Time{})
+
+	// Cleanup items with expiry older than 1 hour
+	count, err := fp.Cleanup(ctx, 1*time.Hour)
+	if err != nil {
+		t.Fatalf("Cleanup: %v", err)
+	}
+
+	// Should have cleaned up 2 entries (expired-old and expired-recent)
+	if count != 2 {
+		t.Errorf("Cleanup count = %d; want 2", count)
+	}
+
+	// Verify expired entries are gone (they're deleted from disk)
+	// Note: Load won't find them even without cleanup since they're expired
+
+	// Verify valid items still exist
+	_, _, found, _ := fp.Load(ctx, "valid-soon")
+	if !found {
+		t.Error("valid-soon should still exist")
+	}
+
+	_, _, found, _ = fp.Load(ctx, "valid-future")
+	if !found {
+		t.Error("valid-future should still exist")
+	}
+
+	_, _, found, _ = fp.Load(ctx, "no-expiry")
+	if !found {
+		t.Error("no-expiry should still exist")
+	}
+}
+
+func TestFilePersist_LoadRecent_WithLimit(t *testing.T) {
+	dir := t.TempDir()
+	fp, err := New[string, int]("test", dir)
+	if err != nil {
+		t.Fatalf("New: %v", err)
+	}
+	defer fp.Close()
+
+	ctx := context.Background()
+
+	// Store 10 entries
+	for i := range 10 {
+		fp.Store(ctx, fmt.Sprintf("key%d", i), i, time.Time{})
+	}
+
+	// Load with limit of 5
+	entryCh, errCh := fp.LoadRecent(ctx, 5)
+
+	loaded := 0
+	for range entryCh {
+		loaded++
+	}
+
+	// Check for errors
+	select {
+	case err := <-errCh:
+		if err != nil {
+			t.Fatalf("LoadRecent error: %v", err)
+		}
+	default:
+	}
+
+	// Should have loaded at most 5 entries
+	if loaded > 5 {
+		t.Errorf("loaded %d entries; want at most 5", loaded)
+	}
+}
+
+func TestFilePersist_Location(t *testing.T) {
+	dir := t.TempDir()
+	fp, err := New[string, int]("test", dir)
+	if err != nil {
+		t.Fatalf("New: %v", err)
+	}
+	defer fp.Close()
+
+	loc := fp.Location("mykey")
+	if loc == "" {
+		t.Error("Location() should return non-empty string")
+	}
+
+	// Should contain the cache directory
+	if !filepath.IsAbs(loc) {
+		t.Error("Location() should return absolute path")
+	}
+}
+
+func TestFilePersist_LoadErrors(t *testing.T) {
+	dir := t.TempDir()
+	fp, err := New[string, int]("test", dir)
+	if err != nil {
+		t.Fatalf("New: %v", err)
+	}
+	defer fp.Close()
+
+	ctx := context.Background()
+
+	// Store a value
+	fp.Store(ctx, "test", 42, time.Time{})
+
+	// Corrupt the file by writing invalid data
+	loc := fp.Location("test")
+	if err := os.WriteFile(loc, []byte("invalid gob data"), 0600); err != nil {
+		t.Fatalf("WriteFile: %v", err)
+	}
+
+	// Load should handle corrupt file gracefully
+	_, _, found, err := fp.Load(ctx, "test")
+	if found {
+		t.Error("Load should not find corrupted entry")
+	}
+	// Error is acceptable for corrupted data
+	_ = err
+}
+
+func TestFilePersist_StoreCreateDir(t *testing.T) {
+	dir := t.TempDir()
+	subdir := filepath.Join(dir, "subdir")
+
+	// Create persister with non-existent subdir
+	fp, err := New[string, int]("testcache", subdir)
+	if err != nil {
+		t.Fatalf("New: %v", err)
+	}
+	defer fp.Close()
+
+	ctx := context.Background()
+
+	// Store should create directories as needed
+	if err := fp.Store(ctx, "key1", 42, time.Time{}); err != nil {
+		t.Fatalf("Store should create directories: %v", err)
+	}
+
+	// Verify file was created
+	val, _, found, err := fp.Load(ctx, "key1")
+	if err != nil {
+		t.Fatalf("Load: %v", err)
+	}
+	if !found || val != 42 {
+		t.Error("stored value should be retrievable")
+	}
+}
+
+func TestFilePersist_CleanupEmptyDir(t *testing.T) {
+	dir := t.TempDir()
+	fp, err := New[string, int]("test", dir)
+	if err != nil {
+		t.Fatalf("New: %v", err)
+	}
+	defer fp.Close()
+
+	ctx := context.Background()
+
+	// Cleanup on empty directory should work
+	count, err := fp.Cleanup(ctx, 1*time.Hour)
+	if err != nil {
+		t.Fatalf("Cleanup on empty dir: %v", err)
+	}
+	if count != 0 {
+		t.Errorf("Cleanup count = %d; want 0 for empty dir", count)
+	}
+}
+
+func TestFilePersist_LoadRecent_Empty(t *testing.T) {
+	dir := t.TempDir()
+	fp, err := New[string, int]("test", dir)
+	if err != nil {
+		t.Fatalf("New: %v", err)
+	}
+	defer fp.Close()
+
+	ctx := context.Background()
+
+	// LoadRecent on empty directory
+	entryCh, errCh := fp.LoadRecent(ctx, 0)
+
+	count := 0
+	for range entryCh {
+		count++
+	}
+
+	select {
+	case err := <-errCh:
+		if err != nil {
+			t.Fatalf("LoadRecent error: %v", err)
+		}
+	default:
+	}
+
+	if count != 0 {
+		t.Errorf("loaded %d entries from empty dir; want 0", count)
+	}
+}
+
+func TestFilePersist_KeyToFilename_Short(t *testing.T) {
+	dir := t.TempDir()
+	fp, err := New[string, int]("test", dir)
+	if err != nil {
+		t.Fatalf("New: %v", err)
+	}
+	defer fp.Close()
+
+	// Test with very short key (less than 2 characters for subdirectory)
+	ctx := context.Background()
+	if err := fp.Store(ctx, "a", 1, time.Time{}); err != nil {
+		t.Fatalf("Store short key: %v", err)
+	}
+
+	val, _, found, err := fp.Load(ctx, "a")
+	if err != nil {
+		t.Fatalf("Load short key: %v", err)
+	}
+	if !found || val != 1 {
+		t.Error("short key should be stored and retrieved")
+	}
+}
+
+func TestFilePersist_Delete_NonExistent(t *testing.T) {
+	dir := t.TempDir()
+	fp, err := New[string, int]("test", dir)
+	if err != nil {
+		t.Fatalf("New: %v", err)
+	}
+	defer fp.Close()
+
+	ctx := context.Background()
+
+	// Delete a non-existent key should not error
+	if err := fp.Delete(ctx, "does-not-exist"); err != nil {
+		t.Errorf("Delete non-existent key should not error: %v", err)
+	}
+}
+
+func TestFilePersist_New_UseDefaultCacheDir(t *testing.T) {
+	// Test creating persister without providing dir (uses OS cache dir)
+	fp, err := New[string, int]("test-default-dir", "")
+	if err != nil {
+		t.Fatalf("New with default dir: %v", err)
+	}
+	defer func() {
+		fp.Close()
+		// Clean up the test directory from OS cache dir
+		os.RemoveAll(fp.(*persister[string, int]).Dir)
+	}()
+
+	ctx := context.Background()
+
+	// Should be able to store and retrieve
+	if err := fp.Store(ctx, "key1", 42, time.Time{}); err != nil {
+		t.Fatalf("Store: %v", err)
+	}
+
+	val, _, found, err := fp.Load(ctx, "key1")
+	if err != nil {
+		t.Fatalf("Load: %v", err)
+	}
+	if !found || val != 42 {
+		t.Error("should be able to use default cache dir")
+	}
+}
+
+func TestFilePersist_Store_WithExpiry(t *testing.T) {
+	dir := t.TempDir()
+	fp, err := New[string, int]("test", dir)
+	if err != nil {
+		t.Fatalf("New: %v", err)
+	}
+	defer fp.Close()
+
+	ctx := context.Background()
+
+	// Store with future expiry
+	expiry := time.Now().Add(1 * time.Hour)
+	if err := fp.Store(ctx, "key1", 42, expiry); err != nil {
+		t.Fatalf("Store with expiry: %v", err)
+	}
+
+	// Load and check expiry is preserved
+	val, loadedExpiry, found, err := fp.Load(ctx, "key1")
+	if err != nil {
+		t.Fatalf("Load: %v", err)
+	}
+	if !found {
+		t.Error("key1 should be found")
+	}
+	if val != 42 {
+		t.Errorf("val = %d; want 42", val)
+	}
+
+	// Expiry should be within 1 second of what we set
+	if loadedExpiry.Sub(expiry).Abs() > time.Second {
+		t.Errorf("expiry = %v; want ~%v", loadedExpiry, expiry)
+	}
+}
+
+func TestFilePersist_LoadRecent_WithExpired(t *testing.T) {
+	dir := t.TempDir()
+	fp, err := New[string, int]("test", dir)
+	if err != nil {
+		t.Fatalf("New: %v", err)
+	}
+	defer fp.Close()
+
+	ctx := context.Background()
+
+	// Store valid and expired entries
+	fp.Store(ctx, "valid", 1, time.Now().Add(1*time.Hour))
+	fp.Store(ctx, "expired", 2, time.Now().Add(-1*time.Hour))
+
+	// LoadRecent should skip expired entries
+	entryCh, errCh := fp.LoadRecent(ctx, 0)
+
+	loaded := make(map[string]int)
+	for entry := range entryCh {
+		loaded[entry.Key] = entry.Value
+	}
+
+	select {
+	case err := <-errCh:
+		if err != nil {
+			t.Fatalf("LoadRecent error: %v", err)
+		}
+	default:
+	}
+
+	// Should only have loaded valid entry
+	if len(loaded) != 1 {
+		t.Errorf("loaded %d entries; want 1 (expired should be skipped)", len(loaded))
+	}
+	if loaded["valid"] != 1 {
+		t.Error("valid entry should be loaded")
+	}
+	if _, ok := loaded["expired"]; ok {
+		t.Error("expired entry should not be loaded")
+	}
+}
+
+func TestFilePersist_LoadRecent_ContextCancellation(t *testing.T) {
+	dir := t.TempDir()
+	fp, err := New[string, int]("test", dir)
+	if err != nil {
+		t.Fatalf("New: %v", err)
+	}
+	defer fp.Close()
+
+	// Store many entries
+	for i := 0; i < 100; i++ {
+		if err := fp.Store(context.Background(), fmt.Sprintf("key-%d", i), i, time.Time{}); err != nil {
+			t.Fatalf("Store: %v", err)
+		}
+	}
+
+	// Create context that we'll cancel
+	ctx, cancel := context.WithCancel(context.Background())
+	entryCh, errCh := fp.LoadRecent(ctx, 0)
+
+	// Cancel immediately
+	cancel()
+
+	// Try to read entries
+	count := 0
+	for range entryCh {
+		count++
+	}
+
+	// Should get cancellation error
+	err = <-errCh
+	if err == nil || !errors.Is(err, context.Canceled) {
+		t.Errorf("expected context.Canceled error, got: %v", err)
+	}
+
+	t.Logf("loaded %d entries before cancellation", count)
+}
+
+func TestFilePersist_Cleanup_ContextCancellation(t *testing.T) {
+	dir := t.TempDir()
+	fp, err := New[string, int]("test", dir)
+	if err != nil {
+		t.Fatalf("New: %v", err)
+	}
+	defer fp.Close()
+
+	// Store many expired entries
+	past := time.Now().Add(-2 * time.Hour)
+	for i := 0; i < 100; i++ {
+		if err := fp.Store(context.Background(), fmt.Sprintf("expired-%d", i), i, past); err != nil {
+			t.Fatalf("Store: %v", err)
+		}
+	}
+
+	// Create context that we'll cancel
+	ctx, cancel := context.WithCancel(context.Background())
+
+	// Cancel immediately
+	cancel()
+
+	// Try to cleanup
+	_, err = fp.Cleanup(ctx, 1*time.Hour)
+	if err == nil || !errors.Is(err, context.Canceled) {
+		t.Errorf("expected context.Canceled error, got: %v", err)
+	}
+}
+

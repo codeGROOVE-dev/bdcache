@@ -262,7 +262,8 @@ func (p *persister[K, V]) Cleanup(ctx context.Context, maxAge time.Duration) (in
 		Filter("expiry <", cutoff).
 		KeysOnly()
 
-	keys, err := p.client.GetAll(ctx, query, nil)
+	var entries []datastoreEntry
+	keys, err := p.client.GetAll(ctx, query, &entries)
 	if err != nil {
 		return 0, fmt.Errorf("query expired entries: %w", err)
 	}
