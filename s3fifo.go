@@ -2,19 +2,23 @@ package bdcache
 
 import (
 	"container/list"
-	"fmt"
-	"log/slog"
+	"hash/maphash"
 	"sync"
 	"sync/atomic"
 	"time"
 )
 
+const numShards = 4
+
 // s3fifo implements the S3-FIFO eviction algorithm from SOSP'23 paper
 // "FIFO queues are all you need for cache eviction"
 //
-// Algorithm:
-// - Small queue (S): 10% of cache, for new objects
-// - Main queue (M): 90% of cache, for promoted objects
+// This implementation uses 4-way sharding for improved concurrent performance.
+// Each shard is an independent S3-FIFO instance with its own queues and lock.
+//
+// Algorithm per shard:
+// - Small queue (S): 10% of shard capacity, for new objects
+// - Main queue (M): 90% of shard capacity, for promoted objects
 // - Ghost queue (G): Tracks evicted keys (no data)
 //
 // On cache miss:
@@ -29,6 +33,12 @@ import (
 //   - If freq == 0 → evict (don't add to ghost, already there)
 //   - If freq > 0 → reinsert to back of Main and decrement freq (lazy promotion)
 type s3fifo[K comparable, V any] struct {
+	shards [numShards]*shard[K, V]
+	seed   maphash.Seed
+}
+
+// shard is an independent S3-FIFO cache partition.
+type shard[K comparable, V any] struct {
 	items     map[K]*entry[K, V]
 	small     *list.List
 	main      *list.List
@@ -36,39 +46,54 @@ type s3fifo[K comparable, V any] struct {
 	ghostKeys map[K]*list.Element
 	capacity  int
 	smallCap  int
-	mainCap   int
 	ghostCap  int
 	mu        sync.RWMutex
 }
 
 // entry represents a cached item with metadata.
 type entry[K comparable, V any] struct {
-	expiry  time.Time
-	key     K
-	value   V
-	element *list.Element
-	freq    atomic.Int32 // Access frequency counter (atomic for lock-free reads)
-	inSmall bool         // True if in Small queue, false if in Main
+	expiry   time.Time
+	key      K
+	value    V
+	element  *list.Element
+	accessed atomic.Bool // Fast "was accessed" flag for S3-FIFO promotion
+	inSmall  bool        // True if in Small queue, false if in Main
 }
 
-// newS3FIFO creates a new S3-FIFO cache with the given capacity.
+// newS3FIFO creates a new sharded S3-FIFO cache with the given total capacity.
 func newS3FIFO[K comparable, V any](capacity int) *s3fifo[K, V] {
 	if capacity <= 0 {
 		capacity = 10000
 	}
 
-	// Small queue is 10% of capacity
+	// Divide capacity across shards (round up to avoid zero-capacity shards)
+	shardCap := (capacity + numShards - 1) / numShards
+	if shardCap < 1 {
+		shardCap = 1
+	}
+
+	c := &s3fifo[K, V]{
+		seed: maphash.MakeSeed(),
+	}
+
+	for i := range numShards {
+		c.shards[i] = newShard[K, V](shardCap)
+	}
+
+	return c
+}
+
+// newShard creates a new S3-FIFO shard with the given capacity.
+func newShard[K comparable, V any](capacity int) *shard[K, V] {
 	smallCap := capacity / 10
 	if smallCap < 1 {
 		smallCap = 1
 	}
-	mainCap := capacity - smallCap
 
-	return &s3fifo[K, V]{
+	return &shard[K, V]{
 		capacity:  capacity,
 		smallCap:  smallCap,
-		mainCap:   mainCap,
-		ghostCap:  capacity, // Ghost queue same size as total capacity
+		ghostCap:  capacity,
 		items:     make(map[K]*entry[K, V]),
 		small:     list.New(),
 		main:      list.New(),
@@ -77,245 +102,323 @@ func newS3FIFO[K comparable, V any](capacity int) *s3fifo[K, V] {
 	}
 }
 
+// getShard returns the shard for a given key using maphash.
+func (c *s3fifo[K, V]) getShard(key K) *shard[K, V] {
+	var h maphash.Hash
+	h.SetSeed(c.seed)
+	//nolint:errcheck,gosec // maphash.Hash.WriteString never returns error
+	h.WriteString(any(key).(string))
+	return c.shards[h.Sum64()%numShards]
+}
+
+// getShardInt is an optimized path for common key types.
+func (c *s3fifo[K, V]) getShardInt(key K) *shard[K, V] {
+	switch k := any(key).(type) {
+	case int:
+		// Safe: modulo result is always in [0, numShards)
+		if k < 0 {
+			k = -k
+		}
+		return c.shards[k%numShards]
+	case int64:
+		if k < 0 {
+			k = -k
+		}
+		return c.shards[k%numShards]
+	case uint:
+		return c.shards[k%numShards]
+	case uint64:
+		return c.shards[k%numShards]
+	case string:
+		var h maphash.Hash
+		h.SetSeed(c.seed)
+		//nolint:gosec // G104: maphash.Hash.WriteString never returns error
+		h.WriteString(k)
+		return c.shards[h.Sum64()%numShards]
+	default:
+		return c.getShard(key)
+	}
+}
+
 // getFromMemory retrieves a value from the in-memory cache.
 // On hit, increments frequency counter (used during eviction).
 func (c *s3fifo[K, V]) getFromMemory(key K) (V, bool) {
-	c.mu.RLock()
-	ent, ok := c.items[key]
+	return c.getShardInt(key).get(key)
+}
+
+func (s *shard[K, V]) get(key K) (V, bool) {
+	s.mu.RLock()
+	ent, ok := s.items[key]
 	if !ok {
-		c.mu.RUnlock()
+		s.mu.RUnlock()
 		var zero V
 		return zero, false
 	}
 
 	// Fast path: check expiration while holding read lock
-	// This is safe because we're only reading ent.expiry
 	if !ent.expiry.IsZero() && time.Now().After(ent.expiry) {
-		c.mu.RUnlock()
+		s.mu.RUnlock()
 		var zero V
 		return zero, false
 	}
 
 	val := ent.value
-	c.mu.RUnlock()
+	s.mu.RUnlock()
 
-	// S3-FIFO: Increment frequency on access (lazy promotion)
-	// Items are promoted during eviction, not on access
-	// Use atomic increment to avoid lock contention on hot path
-	ent.freq.Add(1)
+	// S3-FIFO: Mark as accessed for lazy promotion.
+	// Fast path: skip atomic store if already marked (avoids cache line invalidation).
+	if !ent.accessed.Load() {
+		ent.accessed.Store(true)
+	}
 
 	return val, true
 }
 
 // setToMemory adds or updates a value in the in-memory cache.
 func (c *s3fifo[K, V]) setToMemory(key K, value V, expiry time.Time) {
-	c.mu.Lock()
+	c.getShardInt(key).set(key, value, expiry)
+}
 
-	// Update existing entry (fast path - no defer overhead)
-	// Note: We don't increment freq here. S3-FIFO tracks read access frequency,
-	// not write frequency. Only Get increments freq.
-	if ent, ok := c.items[key]; ok {
+func (s *shard[K, V]) set(key K, value V, expiry time.Time) {
+	s.mu.Lock()
+
+	// Update existing entry
+	if ent, ok := s.items[key]; ok {
 		ent.value = value
 		ent.expiry = expiry
-		c.mu.Unlock()
+		s.mu.Unlock()
 		return
 	}
 
-	// Check if key is in ghost queue (previously evicted, being re-accessed)
+	// Check if key is in ghost queue
 	inGhost := false
-	if ghostElem, ok := c.ghostKeys[key]; ok {
+	if ghostElem, ok := s.ghostKeys[key]; ok {
 		inGhost = true
-		c.ghost.Remove(ghostElem)
-		delete(c.ghostKeys, key)
+		s.ghost.Remove(ghostElem)
+		delete(s.ghostKeys, key)
 	}
 
 	// Create new entry
-	// S3-FIFO rule: If in ghost → insert into Main, else → insert into Small
 	ent := &entry[K, V]{
 		key:     key,
 		value:   value,
 		expiry:  expiry,
 		inSmall: !inGhost,
 	}
-	// freq starts at 0 (atomic.Int32 zero value)
 
-	// S3-FIFO: Make room if at total capacity
-	for len(c.items) >= c.capacity {
-		c.evict()
+	// Make room if at capacity
+	for len(s.items) >= s.capacity {
+		s.evict()
 	}
 
 	// Add to appropriate queue
 	if ent.inSmall {
-		ent.element = c.small.PushBack(ent)
+		ent.element = s.small.PushBack(ent)
 	} else {
-		ent.element = c.main.PushBack(ent)
+		ent.element = s.main.PushBack(ent)
 	}
 
-	c.items[key] = ent
-	c.mu.Unlock()
+	s.items[key] = ent
+	s.mu.Unlock()
 }
 
 // deleteFromMemory removes a value from the in-memory cache.
 func (c *s3fifo[K, V]) deleteFromMemory(key K) {
-	c.mu.Lock()
-	defer c.mu.Unlock()
+	c.getShardInt(key).delete(key)
+}
 
-	ent, ok := c.items[key]
+func (s *shard[K, V]) delete(key K) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+
+	ent, ok := s.items[key]
 	if !ok {
 		return
 	}
 
 	if ent.inSmall {
-		c.small.Remove(ent.element)
+		s.small.Remove(ent.element)
 	} else {
-		c.main.Remove(ent.element)
+		s.main.Remove(ent.element)
 	}
 
-	delete(c.items, key)
+	delete(s.items, key)
 }
 
 // evict removes one item according to S3-FIFO algorithm.
-// S3-FIFO prioritizes evicting from Small queue when it has items.
-func (c *s3fifo[K, V]) evict() {
-	// Evict from Small queue if it has items
-	if c.small.Len() > 0 {
-		c.evictFromSmall()
+func (s *shard[K, V]) evict() {
+	if s.small.Len() > 0 {
+		s.evictFromSmall()
 		return
 	}
-
-	// Otherwise evict from Main queue
-	c.evictFromMain()
+	s.evictFromMain()
 }
 
 // evictFromSmall evicts an item from the small queue.
-// S3-FIFO rule:
-//   - If freq == 0: evict and add key to ghost
-//   - If freq > 0: promote to Main and reset freq to 0
-func (c *s3fifo[K, V]) evictFromSmall() {
-	for c.small.Len() > 0 {
-		elem := c.small.Front()
+func (s *shard[K, V]) evictFromSmall() {
+	for s.small.Len() > 0 {
+		elem := s.small.Front()
 		ent, ok := elem.Value.(*entry[K, V])
 		if !ok {
-			c.small.Remove(elem)
+			s.small.Remove(elem)
 			continue
 		}
 
-		c.small.Remove(elem)
+		s.small.Remove(elem)
 
-		// One-hit wonder: never accessed since insertion
-		if ent.freq.Load() == 0 {
-			// Evict and track in ghost queue
-			delete(c.items, ent.key)
-			c.addToGhost(ent.key)
+		// Check if accessed since last eviction attempt
+		if !ent.accessed.Swap(false) {
+			// Not accessed - evict and track in ghost
+			delete(s.items, ent.key)
+			s.addToGhost(ent.key)
 			return
 		}
 
-		// Hot item: promote to Main queue
-		ent.freq.Store(0) // Reset frequency
+		// Accessed - promote to Main queue
 		ent.inSmall = false
-		ent.element = c.main.PushBack(ent)
+		ent.element = s.main.PushBack(ent)
 	}
 }
 
 // evictFromMain evicts an item from the main queue.
-// S3-FIFO rule:
-//   - If freq == 0: evict (already in ghost from Small eviction)
-//   - If freq > 0: reinsert to back of Main (lazy promotion) and decrement freq
-func (c *s3fifo[K, V]) evictFromMain() {
-	for c.main.Len() > 0 {
-		elem := c.main.Front()
+func (s *shard[K, V]) evictFromMain() {
+	for s.main.Len() > 0 {
+		elem := s.main.Front()
 		ent, ok := elem.Value.(*entry[K, V])
 		if !ok {
-			c.main.Remove(elem)
+			s.main.Remove(elem)
 			continue
 		}
 
-		c.main.Remove(elem)
+		s.main.Remove(elem)
 
-		// Not accessed recently: evict
-		if ent.freq.Load() == 0 {
-			delete(c.items, ent.key)
-			// Note: Don't add to ghost - item was already added when evicted from Small
-			// Only Small queue evictions go to ghost
+		// Check if accessed since last eviction attempt
+		if !ent.accessed.Swap(false) {
+			// Not accessed - evict
+			delete(s.items, ent.key)
 			return
 		}
 
-		// Accessed recently: lazy promotion (FIFO-Reinsertion / Second Chance)
-		// Move to back of Main queue and decrement frequency
-		ent.freq.Add(-1)
-		ent.element = c.main.PushBack(ent)
+		// Accessed - give second chance (FIFO-Reinsertion)
+		ent.element = s.main.PushBack(ent)
 	}
 }
 
-// addToGhost adds a key to the ghost queue for tracking.
-// Ghost queue holds only keys (no values) of evicted items from Small queue.
-func (c *s3fifo[K, V]) addToGhost(key K) {
-	// Evict oldest ghost entry if at capacity
-	if c.ghost.Len() >= c.ghostCap {
-		elem := c.ghost.Front()
+// addToGhost adds a key to the ghost queue.
+func (s *shard[K, V]) addToGhost(key K) {
+	if s.ghost.Len() >= s.ghostCap {
+		elem := s.ghost.Front()
 		if ghostKey, ok := elem.Value.(K); ok {
-			c.ghost.Remove(elem)
-			delete(c.ghostKeys, ghostKey)
-		} else {
-			c.ghost.Remove(elem)
-			slog.Warn("ghost queue contains invalid type", "type", fmt.Sprintf("%T", elem.Value))
+			delete(s.ghostKeys, ghostKey)
 		}
+		s.ghost.Remove(elem)
 	}
 
-	// Add key to ghost queue
-	elem := c.ghost.PushBack(key)
-	c.ghostKeys[key] = elem
+	elem := s.ghost.PushBack(key)
+	s.ghostKeys[key] = elem
 }
 
-// memoryLen returns the number of items in the in-memory cache.
+// memoryLen returns the total number of items across all shards.
 func (c *s3fifo[K, V]) memoryLen() int {
-	c.mu.Lock()
-	defer c.mu.Unlock()
-	return len(c.items)
+	total := 0
+	for _, s := range c.shards {
+		s.mu.RLock()
+		total += len(s.items)
+		s.mu.RUnlock()
+	}
+	return total
 }
 
-// cleanupMemory removes expired entries from the in-memory cache.
+// cleanupMemory removes expired entries from all shards.
 func (c *s3fifo[K, V]) cleanupMemory() int {
-	c.mu.Lock()
-	defer c.mu.Unlock()
+	total := 0
+	for _, s := range c.shards {
+		total += s.cleanup()
+	}
+	return total
+}
+
+func (s *shard[K, V]) cleanup() int {
+	s.mu.Lock()
+	defer s.mu.Unlock()
 
 	now := time.Now()
-	removed := 0
-
-	// Collect expired keys
 	var expired []K
-	for key, ent := range c.items {
+
+	for key, ent := range s.items {
 		if !ent.expiry.IsZero() && now.After(ent.expiry) {
 			expired = append(expired, key)
 		}
 	}
 
-	// Remove expired entries
 	for _, key := range expired {
-		ent := c.items[key]
+		ent := s.items[key]
 		if ent.inSmall {
-			c.small.Remove(ent.element)
+			s.small.Remove(ent.element)
 		} else {
-			c.main.Remove(ent.element)
+			s.main.Remove(ent.element)
 		}
-		delete(c.items, key)
-		removed++
+		delete(s.items, key)
 	}
 
-	return removed
+	return len(expired)
 }
 
-// flushMemory removes all entries from the in-memory cache.
-// Returns the number of entries removed.
+// flushMemory removes all entries from all shards.
 func (c *s3fifo[K, V]) flushMemory() int {
-	c.mu.Lock()
-	defer c.mu.Unlock()
+	total := 0
+	for _, s := range c.shards {
+		total += s.flush()
+	}
+	return total
+}
 
-	n := len(c.items)
-	c.items = make(map[K]*entry[K, V])
-	c.small.Init()
-	c.main.Init()
-	c.ghost.Init()
-	c.ghostKeys = make(map[K]*list.Element)
+func (s *shard[K, V]) flush() int {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+
+	n := len(s.items)
+	s.items = make(map[K]*entry[K, V])
+	s.small.Init()
+	s.main.Init()
+	s.ghost.Init()
+	s.ghostKeys = make(map[K]*list.Element)
 	return n
+}
+
+// totalCapacity returns the total capacity across all shards.
+func (c *s3fifo[K, V]) totalCapacity() int {
+	return c.shards[0].capacity * numShards
+}
+
+// queueLens returns total small and main queue lengths across all shards (for testing/debugging).
+func (c *s3fifo[K, V]) queueLens() (small, main int) {
+	for _, s := range c.shards {
+		s.mu.RLock()
+		small += s.small.Len()
+		main += s.main.Len()
+		s.mu.RUnlock()
+	}
+	return small, main
+}
+
+// isInSmall returns whether a key is in the small queue (for testing).
+func (c *s3fifo[K, V]) isInSmall(key K) bool {
+	s := c.getShardInt(key)
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+	if ent, ok := s.items[key]; ok {
+		return ent.inSmall
+	}
+	return false
+}
+
+// setExpiry sets the expiry time for a key (for testing).
+func (c *s3fifo[K, V]) setExpiry(key K, expiry time.Time) {
+	s := c.getShardInt(key)
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if ent, ok := s.items[key]; ok {
+		ent.expiry = expiry
+	}
 }

@@ -13,12 +13,7 @@ bench:
 	go test -bench=. -benchmem
 
 benchmark:
-	@echo "Running benchmarks vs other Go cache libraries..."
-	@echo "Note: External libraries are only in benchmarks/ go.mod, not main go.mod"
-	@cd benchmarks && go test -bench=BenchmarkSpeed -benchmem -run=^$$
-	@echo ""
-	@echo "Running hit rate comparison (cherrypicked workload)..."
-	@cd benchmarks && go test -run=TestFIFOvsLRU_ScanResistance -v
+	@cd benchmarks && go test -run=TestBenchmarkSuite -v -timeout=120s
 
 clean:
 	go clean -testcache
