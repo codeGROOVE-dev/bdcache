@@ -43,6 +43,9 @@ type PersistenceLayer[K comparable, V any] interface {
 	// Returns the number of entries removed and any error.
 	Flush(ctx context.Context) (int, error)
 
+	// Len returns the number of entries in persistent storage.
+	Len(ctx context.Context) (int, error)
+
 	// Close releases any resources held by the persistence layer.
 	Close() error
 }

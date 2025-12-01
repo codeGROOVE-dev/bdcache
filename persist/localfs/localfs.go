@@ -500,6 +500,31 @@ func (p *persister[K, V]) Flush(ctx context.Context) (int, error) {
 	return n, nil
 }
 
+// Len returns the number of entries in the file-based cache.
+func (p *persister[K, V]) Len(ctx context.Context) (int, error) {
+	n := 0
+	err := filepath.Walk(p.Dir, func(path string, fi os.FileInfo, err error) error {
+		select {
+		case <-ctx.Done():
+			return ctx.Err()
+		default:
+		}
+		if err != nil {
+			slog.Debug("error walking cache dir during len", "path", path, "error", err)
+			return nil
+		}
+		if fi.IsDir() || filepath.Ext(fi.Name()) != ".gob" {
+			return nil
+		}
+		n++
+		return nil
+	})
+	if err != nil {
+		return n, fmt.Errorf("walk directory: %w", err)
+	}
+	return n, nil
+}
+
 // Close cleans up resources.
 func (*persister[K, V]) Close() error {
 	// No resources to clean up for file-based persistence

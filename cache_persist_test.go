@@ -158,6 +158,12 @@ func (m *mockPersister[K, V]) Flush(ctx context.Context) (int, error) {
 	return count, nil
 }
 
+func (m *mockPersister[K, V]) Len(ctx context.Context) (int, error) {
+	m.mu.RLock()
+	defer m.mu.RUnlock()
+	return len(m.data), nil
+}
+
 func (m *mockPersister[K, V]) Close() error {
 	m.mu.Lock()
 	defer m.mu.Unlock()

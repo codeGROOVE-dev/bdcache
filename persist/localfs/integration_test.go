@@ -1001,3 +1001,133 @@ func TestFilePersist_Flush_ContextCancellation(t *testing.T) {
 		t.Errorf("expected context.Canceled error, got: %v", err)
 	}
 }
+
+func TestFilePersist_Len(t *testing.T) {
+	dir := t.TempDir()
+	fp, err := New[string, int]("test", dir)
+	if err != nil {
+		t.Fatalf("New: %v", err)
+	}
+	defer func() {
+		if err := fp.Close(); err != nil {
+			t.Logf("Close error: %v", err)
+		}
+	}()
+
+	ctx := context.Background()
+
+	// Empty cache should have length 0
+	n, err := fp.Len(ctx)
+	if err != nil {
+		t.Fatalf("Len: %v", err)
+	}
+	if n != 0 {
+		t.Errorf("Len() = %d; want 0 for empty cache", n)
+	}
+
+	// Store entries
+	for i := range 10 {
+		if err := fp.Store(ctx, fmt.Sprintf("key-%d", i), i*100, time.Time{}); err != nil {
+			t.Fatalf("Store: %v", err)
+		}
+	}
+
+	// Should have 10 entries
+	n, err = fp.Len(ctx)
+	if err != nil {
+		t.Fatalf("Len: %v", err)
+	}
+	if n != 10 {
+		t.Errorf("Len() = %d; want 10", n)
+	}
+
+	// Delete some entries
+	for i := range 3 {
+		if err := fp.Delete(ctx, fmt.Sprintf("key-%d", i)); err != nil {
+			t.Fatalf("Delete: %v", err)
+		}
+	}
+
+	// Should have 7 entries
+	n, err = fp.Len(ctx)
+	if err != nil {
+		t.Fatalf("Len: %v", err)
+	}
+	if n != 7 {
+		t.Errorf("Len() = %d; want 7", n)
+	}
+
+	// Flush and verify 0
+	_, err = fp.Flush(ctx)
+	if err != nil {
+		t.Fatalf("Flush: %v", err)
+	}
+
+	n, err = fp.Len(ctx)
+	if err != nil {
+		t.Fatalf("Len: %v", err)
+	}
+	if n != 0 {
+		t.Errorf("Len() = %d; want 0 after Flush", n)
+	}
+}
+
+func TestFilePersist_Len_NewPersisterSameDir(t *testing.T) {
+	dir := t.TempDir()
+	ctx := context.Background()
+
+	// Create first persister and store entries
+	fp1, err := New[string, int]("test", dir)
+	if err != nil {
+		t.Fatalf("New: %v", err)
+	}
+
+	for i := range 10 {
+		if err := fp1.Store(ctx, fmt.Sprintf("key-%d", i), i*100, time.Time{}); err != nil {
+			t.Fatalf("Store: %v", err)
+		}
+	}
+
+	// Close first persister
+	if err := fp1.Close(); err != nil {
+		t.Fatalf("Close: %v", err)
+	}
+
+	// Create second persister pointing to same directory
+	fp2, err := New[string, int]("test", dir)
+	if err != nil {
+		t.Fatalf("New: %v", err)
+	}
+	defer func() {
+		if err := fp2.Close(); err != nil {
+			t.Logf("Close error: %v", err)
+		}
+	}()
+
+	// Len should return 10 from disk (entries from previous session)
+	n, err := fp2.Len(ctx)
+	if err != nil {
+		t.Fatalf("Len: %v", err)
+	}
+	if n != 10 {
+		t.Errorf("Len() = %d; want 10 (entries from previous session)", n)
+	}
+
+	// Flush should clear all entries from disk
+	deleted, err := fp2.Flush(ctx)
+	if err != nil {
+		t.Fatalf("Flush: %v", err)
+	}
+	if deleted != 10 {
+		t.Errorf("Flush deleted %d entries; want 10", deleted)
+	}
+
+	// Len should now be 0
+	n, err = fp2.Len(ctx)
+	if err != nil {
+		t.Fatalf("Len: %v", err)
+	}
+	if n != 0 {
+		t.Errorf("Len() = %d; want 0 after Flush", n)
+	}
+}

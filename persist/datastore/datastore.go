@@ -306,6 +306,16 @@ func (p *persister[K, V]) Flush(ctx context.Context) (int, error) {
 	return len(keys), nil
 }
 
+// Len returns the number of entries in Datastore.
+func (p *persister[K, V]) Len(ctx context.Context) (int, error) {
+	query := ds.NewQuery(p.kind).KeysOnly()
+	keys, err := p.client.GetAll(ctx, query, nil)
+	if err != nil {
+		return 0, fmt.Errorf("query all entries: %w", err)
+	}
+	return len(keys), nil
+}
+
 // Close releases Datastore client resources.
 func (p *persister[K, V]) Close() error {
 	return p.client.Close()

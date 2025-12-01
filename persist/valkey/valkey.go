@@ -335,6 +335,35 @@ func (p *persister[K, V]) Flush(ctx context.Context) (int, error) {
 	return n, nil
 }
 
+// Len returns the number of entries with this cache's prefix in Valkey.
+func (p *persister[K, V]) Len(ctx context.Context) (int, error) {
+	n := 0
+	pat := p.prefix + "*"
+	var cursor uint64
+
+	for {
+		select {
+		case <-ctx.Done():
+			return n, ctx.Err()
+		default:
+		}
+
+		cmd := p.client.B().Scan().Cursor(cursor).Match(pat).Count(100).Build()
+		scan, err := p.client.Do(ctx, cmd).AsScanEntry()
+		if err != nil {
+			return n, fmt.Errorf("scan keys: %w", err)
+		}
+
+		n += len(scan.Elements)
+		cursor = scan.Cursor
+		if cursor == 0 {
+			break
+		}
+	}
+
+	return n, nil
+}
+
 // Close releases Valkey client resources.
 func (p *persister[K, V]) Close() error {
 	p.client.Close()
