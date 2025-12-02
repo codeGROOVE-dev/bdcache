@@ -84,21 +84,27 @@ func newS3FIFO[K comparable, V any](capacity int) *s3fifo[K, V] {
 }
 
 // newShard creates a new S3-FIFO shard with the given capacity.
+// Queue sizes per S3-FIFO paper: Small=10%, Main=90%, Ghost=90% (matching Main).
 func newShard[K comparable, V any](capacity int) *shard[K, V] {
 	smallCap := capacity / 10
 	if smallCap < 1 {
 		smallCap = 1
 	}
+	// Ghost tracks evicted keys from Main, so size matches Main (90% of capacity)
+	ghostCap := capacity - smallCap
+	if ghostCap < 1 {
+		ghostCap = 1
+	}
 
 	return &shard[K, V]{
 		capacity:  capacity,
 		smallCap:  smallCap,
-		ghostCap:  capacity,
-		items:     make(map[K]*entry[K, V]),
+		ghostCap:  ghostCap,
+		items:     make(map[K]*entry[K, V], capacity),
 		small:     list.New(),
 		main:      list.New(),
 		ghost:     list.New(),
-		ghostKeys: make(map[K]*list.Element),
+		ghostKeys: make(map[K]*list.Element, ghostCap),
 	}
 }
 
@@ -373,11 +379,11 @@ func (s *shard[K, V]) flush() int {
 	defer s.mu.Unlock()
 
 	n := len(s.items)
-	s.items = make(map[K]*entry[K, V])
+	s.items = make(map[K]*entry[K, V], s.capacity)
 	s.small.Init()
 	s.main.Init()
 	s.ghost.Init()
-	s.ghostKeys = make(map[K]*list.Element)
+	s.ghostKeys = make(map[K]*list.Element, s.ghostCap)
 	return n
 }
 
