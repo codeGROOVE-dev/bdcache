@@ -135,27 +135,7 @@ Here's the results from an M4 MacBook Pro - run `make bench` to see the results 
 | lru        |    7.43M   |    7.44M   |
 | tinylfu    |    4.50M   |    4.07M   |
 
-### Concurrent Throughput (mixed read/write): 16 threads
-
-| Cache      | Get QPS    | Set QPS    |
-|------------|------------|------------|
-| bdcache    |   16.04M   |   15.65M   |
-| otter      |   15.76M   |    2.82M   |
-| ristretto  |   15.36M   |   12.12M   |
-| freecache  |   14.61M   |   14.59M   |
-| lru        |    7.36M   |    7.46M   |
-| tinylfu    |    4.66M   |    3.31M   |
-
-### Concurrent Throughput (mixed read/write): 24 threads
-
-| Cache      | Get QPS    | Set QPS    |
-|------------|------------|------------|
-| otter      |   16.04M   |    2.84M   |
-| bdcache    |   16.04M   |   15.41M   |
-| ristretto  |   16.03M   |   12.90M   |
-| freecache  |   14.62M   |   14.35M   |
-| lru        |    7.52M   |    7.74M   |
-| tinylfu    |    4.95M   |    3.34M   |
+...
 
 ### Concurrent Throughput (mixed read/write): 32 threads
 
@@ -168,6 +148,8 @@ Here's the results from an M4 MacBook Pro - run `make bench` to see the results 
 | lru        |    7.77M   |    7.92M   |
 | tinylfu    |    5.23M   |    3.50M   |
 ```
+
+There will certainly be scenarios where other caches perform faster, but no one blends speed and persistence the way that bdcache does.
 
 ## License
 
