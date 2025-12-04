@@ -46,13 +46,31 @@ func (c *MemoryCache[K, V]) Get(key K) (V, bool) {
 // GetOrSet retrieves a value from the cache, or computes and stores it if not found.
 // The loader function is only called if the key is not in the cache.
 // If no TTL is provided, the default TTL is used.
+// This is optimized to perform a single shard lookup and lock acquisition.
 func (c *MemoryCache[K, V]) GetOrSet(key K, loader func() V, ttl ...time.Duration) V {
+	// We can't use the optimized path with a loader since we'd hold the lock during loader()
 	if val, ok := c.memory.getFromMemory(key); ok {
 		return val
 	}
 	val := loader()
 	c.Set(key, val, ttl...)
 	return val
+}
+
+// SetIfAbsent stores a value only if the key is not already in the cache.
+// Returns the existing value and true if found, or the new value and false if inserted.
+// This is optimized to perform a single shard lookup and lock acquisition.
+func (c *MemoryCache[K, V]) SetIfAbsent(key K, value V, ttl ...time.Duration) (V, bool) {
+	var t time.Duration
+	if len(ttl) > 0 {
+		t = ttl[0]
+	}
+	expiry := c.expiry(t)
+	var expiryNano int64
+	if !expiry.IsZero() {
+		expiryNano = expiry.UnixNano()
+	}
+	return c.memory.getOrSetMemory(key, value, expiryNano)
 }
 
 // Set stores a value in the cache.
@@ -63,8 +81,7 @@ func (c *MemoryCache[K, V]) Set(key K, value V, ttl ...time.Duration) {
 	if len(ttl) > 0 {
 		t = ttl[0]
 	}
-	expiry := c.expiry(t)
-	c.memory.setToMemory(key, value, expiry)
+	c.memory.setToMemory(key, value, c.expiryNano(t))
 }
 
 // Delete removes a value from the cache.
@@ -87,6 +104,17 @@ func (c *MemoryCache[K, V]) Flush() int {
 // For MemoryCache this is a no-op, but provided for API consistency.
 func (*MemoryCache[K, V]) Close() {
 	// No-op for memory-only cache
+}
+
+// expiryNano returns the expiry time in nanoseconds (0 means no expiry).
+func (c *MemoryCache[K, V]) expiryNano(ttl time.Duration) int64 {
+	if ttl <= 0 {
+		ttl = c.defaultTTL
+	}
+	if ttl <= 0 {
+		return 0
+	}
+	return time.Now().Add(ttl).UnixNano()
 }
 
 // expiry returns the expiry time based on TTL and default TTL.

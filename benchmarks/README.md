@@ -2,6 +2,12 @@
 
 This directory contains comparison benchmarks against popular Go cache libraries.
 
+## Attribution
+
+The throughput and hit ratio benchmarks are inspired by and adapted from:
+- [go-cache-benchmark-plus](https://github.com/Yiling-J/go-cache-benchmark-plus) by Yiling-J (theine-go author)
+- Original benchmark framework designed for comparing cache implementations
+
 ## ⚠️ Important Disclaimers
 
 ### Cherrypicked Benchmarks
@@ -41,6 +47,39 @@ Other libraries require manual save/load of the entire cache, which:
 
 ## Running Benchmarks
 
+### Parallel Throughput (go-cache-benchmark-plus style)
+
+```bash
+# Run with varying CPU counts
+go test -bench=BenchmarkThroughput -benchmem -cpu=1,4,8,16
+
+# Just Get operations
+go test -bench=BenchmarkThroughputGetParallel -benchmem -cpu=16
+
+# Just Set operations
+go test -bench=BenchmarkThroughputSetParallel -benchmem -cpu=16
+
+# Hot key contention test
+go test -bench=BenchmarkThroughputGetSingle -benchmem -cpu=16
+```
+
+### Hit Ratio Tests (trace-based patterns)
+
+```bash
+# Quick comparison for tuning
+go test -run=TestQuickHitRate -v
+
+# Full trace-based hit ratio tests
+go test -run=TestTraceHitRate -v
+
+# Individual trace patterns
+go test -run=TestTraceHitRateZipf -v      # Zipf distribution
+go test -run=TestTraceHitRateDatabase -v  # Database/ERP pattern
+go test -run=TestTraceHitRateSearch -v    # Search engine pattern
+go test -run=TestTraceHitRateScan -v      # Scan resistance test
+go test -run=TestTraceHitRateMixed -v     # Mixed GET/SET workload
+```
+
 ### Speed Comparison
 
 ```bash
@@ -64,6 +103,8 @@ Runs the complete benchmark comparison including hit rates, latency, and concurr
 ## Benchmark Files
 
 - `benchmark_test.go` - Speed, hit rate, and throughput benchmarks across libraries
+- `throughput_test.go` - Parallel throughput benchmarks (go-cache-benchmark-plus style)
+- `hitrate_trace_test.go` - Hit ratio benchmarks using synthetic trace patterns
 
 ## Interpreting Results
 

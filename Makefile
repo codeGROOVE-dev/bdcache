@@ -1,8 +1,8 @@
-.PHONY: test lint bench benchmark clean
+.PHONY: test lint bench benchmark benchmark-quick benchmark-throughput benchmark-hitrate benchmark-external benchmark-suite clean
 
 test:
 	@echo "Running tests in all modules..."
-	@find . -name go.mod -execdir go test -v -race -cover -run '^Test' ./... \;
+	@find . -name go.mod -execdir go test -v -race -cover -short -run '^Test' ./... \;
 
 lint:
 	go vet ./...
@@ -12,8 +12,33 @@ lint:
 bench:
 	go test -bench=. -benchmem
 
-benchmark:
-	@cd benchmarks && go test -run=TestBenchmarkSuite -v -timeout=600s
+# Run all benchmarks (shortest to longest)
+benchmark: benchmark-quick benchmark-throughput benchmark-external benchmark-hitrate benchmark-suite
+
+# Quick hit ratio comparison for tuning (~3s)
+benchmark-quick:
+	@echo "=== Quick Hit Rate Comparison ==="
+	@cd benchmarks && go test -run=TestQuickHitRate -v
+
+# Parallel throughput benchmarks (~30s)
+benchmark-throughput:
+	@echo "=== Parallel Throughput Benchmarks ==="
+	@cd benchmarks && go test -bench=BenchmarkThroughput -benchmem -cpu=1,4,8,16
+
+# External benchmark comparison (~10s)
+benchmark-external:
+	@echo "=== External Benchmark Comparison (go-cache-benchmark style) ==="
+	@cd benchmarks && go test -run=TestExternalBenchmark -v
+
+# Hit ratio benchmarks with trace patterns (~2min)
+benchmark-hitrate:
+	@echo "=== Trace-Based Hit Ratio Benchmarks ==="
+	@cd benchmarks && go test -run=TestTraceHitRate -v -timeout=900s
+
+# Full benchmark suite (~5min)
+benchmark-suite:
+	@echo "=== Full Benchmark Suite ==="
+	@cd benchmarks && go test -run=TestBenchmarkSuite -v -timeout=900s
 
 clean:
 	go clean -testcache

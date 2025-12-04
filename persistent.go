@@ -74,7 +74,7 @@ func (c *PersistentCache[K, V]) doWarmup(ctx context.Context) {
 	entryCh, errCh := c.Store.LoadRecent(ctx, c.warmup)
 
 	for entry := range entryCh {
-		c.memory.setToMemory(entry.Key, entry.Value, entry.Expiry)
+		c.memory.setToMemory(entry.Key, entry.Value, timeToNano(entry.Expiry))
 	}
 
 	// Drain error channel (errors silently ignored for best-effort warmup)
@@ -109,7 +109,7 @@ func (c *PersistentCache[K, V]) Get(ctx context.Context, key K) (V, bool, error)
 	}
 
 	// Add to memory cache for future hits
-	c.memory.setToMemory(key, val, expiry)
+	c.memory.setToMemory(key, val, timeToNano(expiry))
 
 	return val, true, nil
 }
@@ -168,7 +168,7 @@ func (c *PersistentCache[K, V]) Set(ctx context.Context, key K, value V, ttl ...
 	}
 
 	// ALWAYS update memory first - reliability guarantee
-	c.memory.setToMemory(key, value, expiry)
+	c.memory.setToMemory(key, value, timeToNano(expiry))
 
 	// Update persistence
 	if err := c.Store.Store(ctx, key, value, expiry); err != nil {
@@ -196,7 +196,7 @@ func (c *PersistentCache[K, V]) SetAsync(ctx context.Context, key K, value V, tt
 	}
 
 	// ALWAYS update memory first - reliability guarantee (synchronous)
-	c.memory.setToMemory(key, value, expiry)
+	c.memory.setToMemory(key, value, timeToNano(expiry))
 
 	// Update persistence asynchronously
 	errCh := make(chan error, 1)
