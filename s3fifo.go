@@ -359,12 +359,12 @@ func (s *shard[K, V]) putGhostEntry(e *ghostEntry[K]) {
 	s.freeGhostEntries = e
 }
 
-// getShard returns the shard for a given key using type-optimized hashing.
+// shard returns the shard for a given key using type-optimized hashing.
 // Uses bitwise AND with shardMask for fast modulo (numShards must be power of 2).
 // Fast paths for int, int64, and string keys avoid the type switch overhead entirely.
 //
 //go:nosplit
-func (c *s3fifo[K, V]) getShard(key K) *shard[K, V] {
+func (c *s3fifo[K, V]) shard(key K) *shard[K, V] {
 	// Fast path for int keys (most common case in benchmarks).
 	// The keyIsInt flag is set once at construction, so this branch is predictable.
 	if c.keyIsInt {
@@ -404,7 +404,7 @@ func (c *s3fifo[K, V]) shardIndexSlow(key K) uint64 {
 // get retrieves a value from the cache.
 // On hit, increments frequency counter (used during eviction).
 func (c *s3fifo[K, V]) get(key K) (V, bool) {
-	return c.getShard(key).get(key)
+	return c.shard(key).get(key)
 }
 
 func (s *shard[K, V]) get(key K) (V, bool) {
@@ -435,7 +435,7 @@ func (s *shard[K, V]) get(key K) (V, bool) {
 // getOrSet retrieves a value or sets it if not found, in a single operation.
 // Returns the value and true if found, or sets the value and returns false.
 func (c *s3fifo[K, V]) getOrSet(key K, value V, expiryNano int64) (V, bool) {
-	return c.getShard(key).getOrSet(key, value, expiryNano)
+	return c.shard(key).getOrSet(key, value, expiryNano)
 }
 
 func (s *shard[K, V]) getOrSet(key K, value V, expiryNano int64) (V, bool) {
@@ -512,7 +512,7 @@ func (s *shard[K, V]) getOrSet(key K, value V, expiryNano int64) (V, bool) {
 // set adds or updates a value in the cache.
 // expiryNano is Unix nanoseconds; 0 means no expiry.
 func (c *s3fifo[K, V]) set(key K, value V, expiryNano int64) {
-	c.getShard(key).set(key, value, expiryNano)
+	c.shard(key).set(key, value, expiryNano)
 }
 
 func (s *shard[K, V]) set(key K, value V, expiryNano int64) {
@@ -563,7 +563,7 @@ func (s *shard[K, V]) set(key K, value V, expiryNano int64) {
 
 // del removes a value from the cache.
 func (c *s3fifo[K, V]) del(key K) {
-	c.getShard(key).delete(key)
+	c.shard(key).delete(key)
 }
 
 func (s *shard[K, V]) delete(key K) {

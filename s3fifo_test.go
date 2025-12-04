@@ -484,7 +484,7 @@ type plainKey struct {
 //nolint:gocognit // Test function intentionally exercises many code paths via subtests
 func TestS3FIFO_VariousKeyTypes(t *testing.T) {
 	// Test that various key types work correctly with the sharding logic.
-	// This exercises different code paths in getShard/shardIndexSlow.
+	// This exercises different code paths in shard/shardIndexSlow.
 
 	t.Run("int", func(t *testing.T) {
 		cache := newS3FIFO[int, string](&config{size: 100, smallRatio: 0.1, ghostRatio: 1.0})
