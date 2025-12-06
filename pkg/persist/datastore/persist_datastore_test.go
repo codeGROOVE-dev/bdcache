@@ -12,7 +12,7 @@ import (
 // createTestStore creates a store for testing.
 // It tries to use a real Datastore if environment variables are set.
 // Otherwise, it falls back to the mock client from persist_datastore_mock_test.go.
-func createTestStore[K comparable, V any](t *testing.T, ctx context.Context) (persist.Store[K, V], func()) {
+func createTestStore[K comparable, V any](t *testing.T, ctx context.Context) (store persist.Store[K, V], cleanup func()) {
 	t.Helper()
 
 	if os.Getenv("DATASTORE_EMULATOR_HOST") != "" || os.Getenv("GOOGLE_APPLICATION_CREDENTIALS") != "" {
@@ -21,11 +21,15 @@ func createTestStore[K comparable, V any](t *testing.T, ctx context.Context) (pe
 		if err != nil {
 			t.Fatalf("New (real): %v", err)
 		}
-		
+
 		cleanup := func() {
 			// Best effort cleanup
-			_, _ = store.Flush(ctx)
-			_ = store.Close()
+			if _, err := store.Flush(ctx); err != nil {
+				t.Logf("store.Flush error during cleanup: %v", err)
+			}
+			if err := store.Close(); err != nil {
+				t.Logf("store.Close error during cleanup: %v", err)
+			}
 		}
 		return store, cleanup
 	}

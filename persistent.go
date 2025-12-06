@@ -2,6 +2,7 @@ package sfcache
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"log/slog"
 	"time"
@@ -49,7 +50,7 @@ func NewTiered[K comparable, V any](store persist.Store[K, V], opts ...Option) (
 	}
 
 	if store == nil {
-		return nil, fmt.Errorf("store cannot be nil")
+		return nil, errors.New("store cannot be nil")
 	}
 
 	cache := &TieredCache[K, V]{

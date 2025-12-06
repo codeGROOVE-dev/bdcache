@@ -1,3 +1,4 @@
+// Package main benchmarks baseline map memory usage.
 package main
 
 import (
@@ -9,21 +10,21 @@ import (
 	"time"
 )
 
-var keepAlive interface{}
+var keepAlive any //nolint:unused // prevents compiler from optimizing away allocations in benchmarks
 
 func main() {
 	_ = flag.Int("iter", 100000, "unused in this mode unless target is 0")
-	cap := flag.Int("cap", 25000, "capacity")
+	capacity := flag.Int("cap", 25000, "capacity")
 	valSize := flag.Int("valSize", 1024, "value size")
 	target := flag.Int("target", 0, "if > 0, just fill map with this many items and exit")
 	flag.Parse()
 
-	// Initial GC
+	//nolint:revive // explicit GC required for accurate memory benchmarking
 	runtime.GC()
 	debug.FreeOSMemory()
 
 	// Use target as capacity if specified (fair comparison for partial fills)
-	mapCap := *cap
+	mapCap := *capacity
 	if *target > 0 {
 		mapCap = *target
 	}
@@ -38,7 +39,7 @@ func main() {
 		}
 	} else {
 		// Fallback: fill up to capacity
-		for i := range *cap {
+		for i := range *capacity {
 			key := "key-" + strconv.Itoa(i)
 			val := make([]byte, *valSize)
 			m[key] = val
@@ -47,9 +48,10 @@ func main() {
 
 	keepAlive = m
 
-	// Force GC
+	//nolint:revive // explicit GC required for accurate memory benchmarking
 	runtime.GC()
 	time.Sleep(100 * time.Millisecond)
+	//nolint:revive // explicit GC required for accurate memory benchmarking
 	runtime.GC()
 	debug.FreeOSMemory()
 

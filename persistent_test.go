@@ -983,10 +983,14 @@ func TestNewTiered_WithTTL_Behavior(t *testing.T) {
 	// Memory expiration is lazy on Get or handled by internal logic, but here we just check availability.
 
 	// Set without explicit TTL -> uses default
-	_ = cache.Set(ctx, "default", 1)
+	if err := cache.Set(ctx, "default", 1); err != nil {
+		t.Fatalf("Set: %v", err)
+	}
 
 	// Set with explicit TTL -> overrides default
-	_ = cache.Set(ctx, "longer", 2, 1*time.Hour)
+	if err := cache.Set(ctx, "longer", 2, 1*time.Hour); err != nil {
+		t.Fatalf("Set: %v", err)
+	}
 
 	// Wait for default to expire
 	time.Sleep(defaultTTL + 10*time.Millisecond)

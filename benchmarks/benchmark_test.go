@@ -138,7 +138,7 @@ func runHitRateBenchmark() {
 	fmt.Println("| Cache         | Size=1% | Size=2.5% | Size=5% |")
 	fmt.Println("|---------------|---------|-----------|---------|")
 
-	workload := workload.GenerateZipfInt(hitRateWorkload, hitRateKeySpace, hitRateAlpha, 42)
+	keys := workload.GenerateZipfInt(hitRateWorkload, hitRateKeySpace, hitRateAlpha, 42)
 	cacheSizes := []int{10000, 25000, 50000}
 
 	caches := []struct {
@@ -157,7 +157,7 @@ func runHitRateBenchmark() {
 	for i, c := range caches {
 		rates := make([]float64, len(cacheSizes))
 		for j, size := range cacheSizes {
-			rates[j] = c.fn(workload, size)
+			rates[j] = c.fn(keys, size)
 		}
 		results[i] = hitRateResult{name: c.name, rates: rates}
 
@@ -211,33 +211,33 @@ func printHitRateSummary(results []hitRateResult) {
 	}
 }
 
-func hitRateSFCache(workload []int, cacheSize int) float64 {
+func hitRateSFCache(keys []int, cacheSize int) float64 {
 	cache := sfcache.New[int, int](sfcache.Size(cacheSize))
 	var hits int
-	for _, key := range workload {
+	for _, key := range keys {
 		if _, found := cache.Get(key); found {
 			hits++
 		} else {
 			cache.Set(key, key)
 		}
 	}
-	return float64(hits) / float64(len(workload)) * 100
+	return float64(hits) / float64(len(keys)) * 100
 }
 
-func hitRateOtter(workload []int, cacheSize int) float64 {
+func hitRateOtter(keys []int, cacheSize int) float64 {
 	cache := otter.Must(&otter.Options[int, int]{MaximumSize: cacheSize})
 	var hits int
-	for _, key := range workload {
+	for _, key := range keys {
 		if _, found := cache.GetIfPresent(key); found {
 			hits++
 		} else {
 			cache.Set(key, key)
 		}
 	}
-	return float64(hits) / float64(len(workload)) * 100
+	return float64(hits) / float64(len(keys)) * 100
 }
 
-func hitRateRistretto(workload []int, cacheSize int) float64 {
+func hitRateRistretto(keys []int, cacheSize int) float64 {
 	cache, _ := ristretto.NewCache(&ristretto.Config{
 		NumCounters: int64(cacheSize * 10),
 		MaxCost:     int64(cacheSize),
@@ -245,7 +245,7 @@ func hitRateRistretto(workload []int, cacheSize int) float64 {
 	})
 	defer cache.Close()
 	var hits int
-	for _, key := range workload {
+	for _, key := range keys {
 		if _, found := cache.Get(key); found {
 			hits++
 		} else {
@@ -253,64 +253,64 @@ func hitRateRistretto(workload []int, cacheSize int) float64 {
 			cache.Wait()
 		}
 	}
-	return float64(hits) / float64(len(workload)) * 100
+	return float64(hits) / float64(len(keys)) * 100
 }
 
-func hitRateLRU(workload []int, cacheSize int) float64 {
+func hitRateLRU(keys []int, cacheSize int) float64 {
 	cache, _ := lru.New[int, int](cacheSize)
 	var hits int
-	for _, key := range workload {
+	for _, key := range keys {
 		if _, found := cache.Get(key); found {
 			hits++
 		} else {
 			cache.Add(key, key)
 		}
 	}
-	return float64(hits) / float64(len(workload)) * 100
+	return float64(hits) / float64(len(keys)) * 100
 }
 
-func hitRateTinyLFU(workload []int, cacheSize int) float64 {
+func hitRateTinyLFU(keys []int, cacheSize int) float64 {
 	cache := tinylfu.New(cacheSize, cacheSize*10)
 	// Pre-compute keys to avoid strconv overhead affecting hit rate measurement
-	keys := make([]string, hitRateKeySpace)
+	precomputedKeys := make([]string, hitRateKeySpace)
 	for i := range hitRateKeySpace {
-		keys[i] = strconv.Itoa(i)
+		precomputedKeys[i] = strconv.Itoa(i)
 	}
 	var hits int
-	for _, key := range workload {
-		k := keys[key]
+	for _, key := range keys {
+		k := precomputedKeys[key]
 		if _, found := cache.Get(k); found {
 			hits++
 		} else {
 			cache.Set(&tinylfu.Item{Key: k, Value: key})
 		}
 	}
-	return float64(hits) / float64(len(workload)) * 100
+	return float64(hits) / float64(len(keys)) * 100
 }
 
-func hitRateFreecache(workload []int, cacheSize int) float64 {
+func hitRateFreecache(keys []int, cacheSize int) float64 {
 	cacheBytes := cacheSize * 24
 	if cacheBytes < 512*1024 {
 		cacheBytes = 512 * 1024
 	}
 	cache := freecache.NewCache(cacheBytes)
 	// Pre-compute keys and values to avoid conversion overhead affecting hit rate measurement
-	keys := make([][]byte, hitRateKeySpace)
+	precomputedKeys := make([][]byte, hitRateKeySpace)
 	vals := make([][]byte, hitRateKeySpace)
 	for i := range hitRateKeySpace {
-		keys[i] = []byte(strconv.Itoa(i))
+		precomputedKeys[i] = []byte(strconv.Itoa(i))
 		vals[i] = make([]byte, 8)
 		binary.LittleEndian.PutUint64(vals[i], uint64(i))
 	}
 	var hits int
-	for _, key := range workload {
-		if _, err := cache.Get(keys[key]); err == nil {
+	for _, key := range keys {
+		if _, err := cache.Get(precomputedKeys[key]); err == nil {
 			hits++
 		} else {
-			cache.Set(keys[key], vals[key], 0)
+			cache.Set(precomputedKeys[key], vals[key], 0)
 		}
 	}
-	return float64(hits) / float64(len(workload)) * 100
+	return float64(hits) / float64(len(keys)) * 100
 }
 
 // =============================================================================
@@ -605,7 +605,7 @@ const (
 
 func runZipfThroughputBenchmark(threads int) {
 	// Generate Zipf workload once for all caches
-	workload := workload.GenerateZipfInt(zipfWorkloadSize, perfCacheSize, zipfAlpha, 42)
+	keys := workload.GenerateZipfInt(zipfWorkloadSize, perfCacheSize, zipfAlpha, 42)
 
 	caches := []string{"sfcache", "otter", "ristretto", "tinylfu", "freecache", "lru"}
 
@@ -613,7 +613,7 @@ func runZipfThroughputBenchmark(threads int) {
 	for i, name := range caches {
 		results[i] = concurrentResult{
 			name: name,
-			qps:  measureZipfQPS(name, threads, workload),
+			qps:  measureZipfQPS(name, threads, keys),
 		}
 	}
 
@@ -641,11 +641,11 @@ func runZipfThroughputBenchmark(threads int) {
 }
 
 //nolint:gocognit,maintidx // benchmark code with repetitive cache setup
-func measureZipfQPS(cacheName string, threads int, workload []int) float64 {
+func measureZipfQPS(cacheName string, threads int, keys []int) float64 {
 	var ops atomic.Int64
 	var stop atomic.Bool
 	var wg sync.WaitGroup
-	workloadLen := len(workload)
+	workloadLen := len(keys)
 	var ristrettoCache *ristretto.Cache // Track for cleanup
 
 	switch cacheName {
@@ -660,7 +660,7 @@ func measureZipfQPS(cacheName string, threads int, workload []int) float64 {
 				defer wg.Done()
 				for i := 0; ; {
 					for range opsBatchSize {
-						key := workload[i%workloadLen]
+						key := keys[i%workloadLen]
 						if i%4 == 0 { // 25% writes
 							cache.Set(key, i)
 						} else { // 75% reads
@@ -687,7 +687,7 @@ func measureZipfQPS(cacheName string, threads int, workload []int) float64 {
 				defer wg.Done()
 				for i := 0; ; {
 					for range opsBatchSize {
-						key := workload[i%workloadLen]
+						key := keys[i%workloadLen]
 						if i%4 == 0 { // 25% writes
 							cache.Set(key, i)
 						} else { // 75% reads
@@ -719,7 +719,7 @@ func measureZipfQPS(cacheName string, threads int, workload []int) float64 {
 				defer wg.Done()
 				for i := 0; ; {
 					for range opsBatchSize {
-						key := workload[i%workloadLen]
+						key := keys[i%workloadLen]
 						if i%4 == 0 { // 25% writes
 							ristrettoCache.Set(key, i, 1)
 						} else { // 75% reads
@@ -746,7 +746,7 @@ func measureZipfQPS(cacheName string, threads int, workload []int) float64 {
 				defer wg.Done()
 				for i := 0; ; {
 					for range opsBatchSize {
-						key := workload[i%workloadLen]
+						key := keys[i%workloadLen]
 						if i%4 == 0 { // 25% writes
 							cache.Add(key, i)
 						} else { // 75% reads
@@ -764,10 +764,10 @@ func measureZipfQPS(cacheName string, threads int, workload []int) float64 {
 
 	case "tinylfu":
 		cache := tinylfu.NewSync(perfCacheSize, perfCacheSize*10)
-		keys := make([]string, perfCacheSize)
+		keysAsStrings := make([]string, perfCacheSize)
 		for i := range perfCacheSize {
-			keys[i] = strconv.Itoa(i)
-			cache.Set(&tinylfu.Item{Key: keys[i], Value: i})
+			keysAsStrings[i] = strconv.Itoa(i)
+			cache.Set(&tinylfu.Item{Key: keysAsStrings[i], Value: i})
 		}
 		for range threads {
 			wg.Add(1)
@@ -775,11 +775,11 @@ func measureZipfQPS(cacheName string, threads int, workload []int) float64 {
 				defer wg.Done()
 				for i := 0; ; {
 					for range opsBatchSize {
-						key := workload[i%workloadLen]
+						key := keys[i%workloadLen]
 						if i%4 == 0 { // 25% writes
-							cache.Set(&tinylfu.Item{Key: keys[key], Value: i})
+							cache.Set(&tinylfu.Item{Key: keysAsStrings[key], Value: i})
 						} else { // 75% reads
-							cache.Get(keys[key])
+							cache.Get(keysAsStrings[key])
 						}
 						i++
 					}
@@ -793,13 +793,13 @@ func measureZipfQPS(cacheName string, threads int, workload []int) float64 {
 
 	case "freecache":
 		cache := freecache.NewCache(perfCacheSize * 256)
-		keys := make([][]byte, perfCacheSize)
+		keysAsBytes := make([][]byte, perfCacheSize)
 		vals := make([][]byte, perfCacheSize)
 		for i := range perfCacheSize {
-			keys[i] = []byte(strconv.Itoa(i))
+			keysAsBytes[i] = []byte(strconv.Itoa(i))
 			vals[i] = make([]byte, 8)
 			binary.LittleEndian.PutUint64(vals[i], uint64(i))
-			cache.Set(keys[i], vals[i], 0)
+			cache.Set(keysAsBytes[i], vals[i], 0)
 		}
 		for range threads {
 			wg.Add(1)
@@ -807,11 +807,11 @@ func measureZipfQPS(cacheName string, threads int, workload []int) float64 {
 				defer wg.Done()
 				for i := 0; ; {
 					for range opsBatchSize {
-						key := workload[i%workloadLen]
+						key := keys[i%workloadLen]
 						if i%4 == 0 { // 25% writes
-							cache.Set(keys[key], vals[key], 0)
+							cache.Set(keysAsBytes[key], vals[key], 0)
 						} else { // 75% reads
-							cache.Get(keys[key])
+							cache.Get(keysAsBytes[key])
 						}
 						i++
 					}
@@ -857,7 +857,6 @@ type runnerOutput struct {
 }
 
 func runMemoryBenchmark(t *testing.T) {
-
 	fmt.Println()
 
 	fmt.Println("### Memory Usage (32k cap, 32k unique items, 1KB values) - Isolated Processes")
@@ -870,107 +869,63 @@ func runMemoryBenchmark(t *testing.T) {
 
 	fmt.Println("|---------------|--------------|-------------|------------------------------|")
 
-
-
-
-
-
-
 	caches := []string{"mem_sfcache", "mem_otter", "mem_ristretto", "mem_tinylfu", "mem_freecache", "mem_lru"}
 
 	results := make([]runnerOutput, len(caches))
 
-
-
 	for i, name := range caches {
-
 		results[i] = buildAndRun(t, name)
-
 	}
-
-
 
 	// Sort by memory usage ascending
 
 	for i := range len(results) - 1 {
-
 		for j := i + 1; j < len(results); j++ {
-
 			if results[j].Bytes < results[i].Bytes {
-
 				results[i], results[j] = results[j], results[i]
-
 			}
-
 		}
-
 	}
 
-
-
 	for _, r := range results {
-
 		// Run baseline with exact same number of items for fair comparison
 
 		baseline := buildAndRun(t, "mem_baseline", "-target", strconv.Itoa(r.Items))
-
-
 
 		// Calculate overhead relative to baseline
 
 		diff := int64(r.Bytes) - int64(baseline.Bytes)
 
-
-
 		var overheadPerItem int64
 
 		if r.Items > 0 {
-
 			overheadPerItem = diff / int64(r.Items)
-
 		}
-
-
 
 		mb := float64(r.Bytes) / 1024 / 1024
 
-
-
 		fmt.Printf("| %s | %12d | %8.2f MB | %28d |\n",
-
 			formatCacheName(r.Name), r.Items, mb, overheadPerItem)
-
 	}
-
 	fmt.Println()
-
 }
 
-
-
 func buildAndRun(t *testing.T, cmdDir string, args ...string) runnerOutput {
-
 	// Binary name = cmdDir (e.g., mem_sfcache)
 
 	binName := "./" + cmdDir + ".bin"
 
 	srcDir := "./cmd/" + cmdDir
 
-
-
 	// Build
 
 	buildCmd := exec.Command("go", "build", "-o", binName, srcDir)
 
 	if out, err := buildCmd.CombinedOutput(); err != nil {
-
 		t.Fatalf("failed to build %s: %v\n%s", srcDir, err, out)
-
 	}
 
 	defer os.Remove(binName)
-
-
 
 	// Run
 
@@ -979,27 +934,15 @@ func buildAndRun(t *testing.T, cmdDir string, args ...string) runnerOutput {
 	runCmd := exec.Command(binName, runArgs...)
 
 	out, err := runCmd.CombinedOutput()
-
-
-
 	if err != nil {
-
 		t.Fatalf("failed to run %s: %v\nOutput: %s", binName, err, out)
-
 	}
-
-
 
 	var res runnerOutput
 
 	if err := json.Unmarshal(out, &res); err != nil {
-
 		t.Fatalf("failed to parse output for %s: %v\nOutput: %s", binName, err, out)
-
 	}
 
 	return res
-
 }
-
-
