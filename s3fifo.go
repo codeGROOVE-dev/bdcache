@@ -95,12 +95,13 @@ type shard[K comparable, V any] struct {
 	small   entryList[K, V]    // Intrusive list for small queue
 	main    entryList[K, V]    // Intrusive list for main queue
 
-	// Two-map ghost: tracks recently evicted keys with zero false positives.
-	// Two maps rotate to provide approximate FIFO without linked list overhead.
+	// Two-stage Bloom filter ghost: tracks recently evicted keys with low memory overhead.
+	// Two filters rotate to provide approximate FIFO.
 	// When ghostActive fills up, ghostAging is cleared and they swap roles.
-	ghostActive map[K]struct{} // current generation
-	ghostAging  map[K]struct{} // previous generation (read-only until swap)
-	ghostCap    int            // max entries before rotation
+	ghostActive *bloomFilter
+	ghostAging  *bloomFilter
+	ghostCap    int
+	hasher      func(K) uint64
 
 	capacity int
 	smallCap int
@@ -216,31 +217,66 @@ func newS3FIFO[K comparable, V any](cfg *config) *s3fifo[K, V] {
 		c.keyIsString = true
 	}
 
-	// Auto-tune ratios based on capacity
-	// Note: Two-map ghost tracks 2x ghostRatio total (both maps can be nearly full).
-	// Ghost ratio sweep results (Meta trace):
-	//   0.5x: 68.15% / 76.05%
-	//   1.0x: 68.42% / 76.27%
-	//   1.5x: 68.53% / 76.34%  <- sweet spot (good hit rate, reasonable memory)
-	//   2.0x: 68.57% / 76.39%  <- diminishing returns
+	// Auto-tune ratios based on capacity.
+	// Small caches with Zipf workloads need tight ghost tracking to avoid false promotions.
+	// Large caches benefit from more ghost history for better admission decisions.
+	//
+	// Zipf benchmark results:
+	//   500 items (0.1%):  ghostRatio=0.2 -> 48.12% (wins)
+	//   5000 items (1%):   ghostRatio=0.2 -> 64.50% (wins)
+	//   50000 items (10%): testing larger small queue for better ghost learning
 	var smallRatio, ghostRatio float64
-	if capacity <= 16384 {
-		smallRatio = 0.01 // 1% for small caches (Zipf-friendly)
-		ghostRatio = 1.0  // 100% per map = ~200% total for small caches
+	if capacity <= 10000 {
+		smallRatio = 0.01 // 1% small queue for Zipf-skewed workloads
+		ghostRatio = 0.2  // 20% per bloom = ~40% total ghost tracking
 	} else {
-		smallRatio = 0.05 // 5% for large caches (Meta trace optimal)
-		ghostRatio = 1.5  // 150% per map = ~300% total for large caches
+		smallRatio = 0.10 // 10% for large caches - standard S3-FIFO ratio
+		ghostRatio = 0.2  // 20% per bloom = ~40% total ghost tracking
+	}
+
+	// Prepare hasher for Bloom filter
+	var hasher func(K) uint64
+	switch {
+	case c.keyIsInt:
+		hasher = func(key K) uint64 {
+			return hashInt64(int64(*(*int)(unsafe.Pointer(&key))))
+		}
+	case c.keyIsInt64:
+		hasher = func(key K) uint64 {
+			return hashInt64(*(*int64)(unsafe.Pointer(&key)))
+		}
+	case c.keyIsString:
+		hasher = func(key K) uint64 {
+			return wyhashString(*(*string)(unsafe.Pointer(&key)))
+		}
+	default:
+		hasher = func(key K) uint64 {
+			switch k := any(key).(type) {
+			case uint:
+				//nolint:gosec // G115: intentional bit reinterpretation for hashing
+				return hashInt64(int64(k))
+			case uint64:
+				//nolint:gosec // G115: intentional bit reinterpretation for hashing
+				return hashInt64(int64(k))
+			case string:
+				return wyhashString(k)
+			case fmt.Stringer:
+				return wyhashString(k.String())
+			default:
+				return wyhashString(fmt.Sprintf("%v", k))
+			}
+		}
 	}
 
 	for i := range numShards {
-		c.shards[i] = newShard[K, V](shardCap, smallRatio, ghostRatio)
+		c.shards[i] = newShard[K, V](shardCap, smallRatio, ghostRatio, hasher)
 	}
 
 	return c
 }
 
 // newShard creates a new S3-FIFO shard with the given capacity.
-func newShard[K comparable, V any](capacity int, smallRatio, ghostRatio float64) *shard[K, V] {
+func newShard[K comparable, V any](capacity int, smallRatio, ghostRatio float64, hasher func(K) uint64) *shard[K, V] {
 	// Small queue: recommended 10%
 	smallCap := int(float64(capacity) * smallRatio)
 	if smallCap < 1 {
@@ -258,8 +294,9 @@ func newShard[K comparable, V any](capacity int, smallRatio, ghostRatio float64)
 		smallCap:    smallCap,
 		ghostCap:    ghostCap,
 		entries:     make(map[K]*entry[K, V], capacity),
-		ghostActive: make(map[K]struct{}, ghostCap),
-		ghostAging:  make(map[K]struct{}, ghostCap),
+		ghostActive: newBloomFilter(ghostCap, 0.0001),
+		ghostAging:  newBloomFilter(ghostCap, 0.0001),
+		hasher:      hasher,
 	}
 	return s
 }
@@ -340,15 +377,19 @@ func (c *s3fifo[K, V]) get(key K) (V, bool) {
 func (s *shard[K, V]) get(key K) (V, bool) {
 	s.mu.RLock()
 	ent, ok := s.entries[key]
-	s.mu.RUnlock()
-
 	if !ok {
+		s.mu.RUnlock()
 		var zero V
 		return zero, false
 	}
 
+	// Read values while holding lock to avoid race with concurrent set()
+	val := ent.value
+	expiry := ent.expiryNano
+	s.mu.RUnlock()
+
 	// Check expiration (lazy - actual cleanup happens in background)
-	if ent.expiryNano != 0 && time.Now().UnixNano() > ent.expiryNano {
+	if expiry != 0 && time.Now().UnixNano() > expiry {
 		var zero V
 		return zero, false
 	}
@@ -359,7 +400,7 @@ func (s *shard[K, V]) get(key K) (V, bool) {
 		ent.freq.Store(f + 1)
 	}
 
-	return ent.value, true
+	return val, true
 }
 
 // set adds or updates a value in the cache.
@@ -381,10 +422,11 @@ func (s *shard[K, V]) set(key K, value V, expiryNano int64) {
 
 	// Slow path: insert new key (already holding lock)
 
-	// Check if key is in ghost (zero false positives)
-	_, inGhost := s.ghostActive[key]
+	// Check if key is in ghost (Bloom filter)
+	h := s.hasher(key)
+	inGhost := s.ghostActive.Contains(h)
 	if !inGhost {
-		_, inGhost = s.ghostAging[key]
+		inGhost = s.ghostAging.Contains(h)
 	}
 
 	// Create new entry
@@ -484,14 +526,17 @@ func (s *shard[K, V]) evictFromMain() {
 	}
 }
 
-// addToGhost adds a key to the ghost queue using two rotating maps.
+// addToGhost adds a key to the ghost queue using two rotating Bloom filters.
 func (s *shard[K, V]) addToGhost(key K) {
-	s.ghostActive[key] = struct{}{}
+	h := s.hasher(key)
+	if !s.ghostActive.Contains(h) {
+		s.ghostActive.Add(h)
+	}
 
-	// Rotate maps when active is full (provides approximate FIFO)
-	if len(s.ghostActive) >= s.ghostCap {
-		// Clear aging map and swap - aging becomes new active
-		clear(s.ghostAging)
+	// Rotate filters when active is full (provides approximate FIFO)
+	if s.ghostActive.entries >= s.ghostCap {
+		// Reset aging filter and swap - aging becomes new active
+		s.ghostAging.Reset()
 		s.ghostActive, s.ghostAging = s.ghostAging, s.ghostActive
 	}
 }
@@ -525,7 +570,7 @@ func (s *shard[K, V]) flush() int {
 	s.entries = make(map[K]*entry[K, V], s.capacity)
 	s.small.init()
 	s.main.init()
-	clear(s.ghostActive)
-	clear(s.ghostAging)
+	s.ghostActive.Reset()
+	s.ghostAging.Reset()
 	return n
 }
