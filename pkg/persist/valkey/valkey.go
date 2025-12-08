@@ -8,7 +8,7 @@ import (
 	"fmt"
 	"time"
 
-	"github.com/codeGROOVE-dev/sfcache/pkg/persist"
+	"github.com/codeGROOVE-dev/sfcache"
 	"github.com/valkey-io/valkey-go"
 )
 
@@ -25,7 +25,7 @@ type store[K comparable, V any] struct {
 // New creates a new Valkey-based persistence layer.
 // The cacheID is used as a key prefix to namespace cache entries.
 // addr should be in the format "host:port" (e.g., "localhost:6379").
-func New[K comparable, V any](ctx context.Context, cacheID, addr string) (persist.Store[K, V], error) {
+func New[K comparable, V any](ctx context.Context, cacheID, addr string) (sfcache.Store[K, V], error) {
 	if cacheID == "" {
 		return nil, errors.New("cacheID cannot be empty")
 	}
@@ -167,8 +167,8 @@ func (p *store[K, V]) Delete(ctx context.Context, key K) error {
 // If limit > 0, returns up to limit entries (not guaranteed to be most recent).
 //
 //nolint:gocritic // unnamedResult - channel returns are self-documenting
-func (p *store[K, V]) LoadRecent(ctx context.Context, limit int) (<-chan persist.Entry[K, V], <-chan error) {
-	entryCh := make(chan persist.Entry[K, V], 100)
+func (p *store[K, V]) LoadRecent(ctx context.Context, limit int) (<-chan sfcache.Entry[K, V], <-chan error) {
+	entryCh := make(chan sfcache.Entry[K, V], 100)
 	errCh := make(chan error, 1)
 
 	go func() {
@@ -244,7 +244,7 @@ func (p *store[K, V]) LoadRecent(ctx context.Context, limit int) (<-chan persist
 					key = sk
 				}
 
-				entryCh <- persist.Entry[K, V]{
+				entryCh <- sfcache.Entry[K, V]{
 					Key:       key,
 					Value:     value,
 					Expiry:    expiry,

@@ -9,25 +9,28 @@ tag:
 	fi
 	@echo "=== Releasing $(VERSION) ==="
 	@echo ""
-	@echo "Step 1: Update go.mod to require pkg/persist $(VERSION)..."
-	@sed -i '' 's|github.com/codeGROOVE-dev/sfcache/pkg/persist v[^ ]*|github.com/codeGROOVE-dev/sfcache/pkg/persist $(VERSION)|' go.mod
+	@echo "Step 1: Update submodule go.mod files to require sfcache $(VERSION)..."
+	@find . -path ./go.mod -prune -o -name go.mod -print | xargs -I{} sed -i '' 's|github.com/codeGROOVE-dev/sfcache v[^ ]*|github.com/codeGROOVE-dev/sfcache $(VERSION)|' {}
+	@find . -path ./go.mod -prune -o -name go.mod -print | xargs -I{} sed -i '' 's|github.com/codeGROOVE-dev/sfcache/pkg/persist/localfs v[^ ]*|github.com/codeGROOVE-dev/sfcache/pkg/persist/localfs $(VERSION)|' {}
+	@find . -path ./go.mod -prune -o -name go.mod -print | xargs -I{} sed -i '' 's|github.com/codeGROOVE-dev/sfcache/pkg/persist/datastore v[^ ]*|github.com/codeGROOVE-dev/sfcache/pkg/persist/datastore $(VERSION)|' {}
 	@echo ""
 	@echo "Step 2: Commit go.mod changes..."
-	@git add go.mod
+	@git add -A
 	@git commit -m "Release $(VERSION)" || echo "  (no changes to commit)"
 	@echo ""
-	@echo "Step 3: Create tags..."
-	@git tag -a $(VERSION) -m "$(VERSION)"
+	@echo "Step 3: Create and push tags..."
+	@git tag -a $(VERSION) -m "$(VERSION)" --force
+	@git push origin $(VERSION) --force
 	@find . -name go.mod -not -path "./go.mod" | while read mod; do \
 		dir=$$(dirname $$mod); \
 		dir=$${dir#./}; \
 		echo "  $$dir/$(VERSION)"; \
-		git tag -a $$dir/$(VERSION) -m "$(VERSION)"; \
+		git tag -a $$dir/$(VERSION) -m "$(VERSION)" --force; \
+		git push origin $$dir/$(VERSION) --force; \
 	done
 	@echo ""
-	@echo "Step 4: Push commit and tags..."
+	@echo "Step 4: Push commit..."
 	@git push origin main
-	@git push origin --tags
 	@echo ""
 	@echo "=== Release $(VERSION) complete ==="
 	@echo "Tags pushed:"
@@ -35,7 +38,7 @@ tag:
 
 # Create a GitHub release
 # Usage: make release VERSION=v1.2.3
-release: tag
+release: update tag
 	@echo ""
 	@echo "Step 5: Creating GitHub release..."
 	@gh release create $(VERSION) --title "$(VERSION)" --notes "Release $(VERSION)"

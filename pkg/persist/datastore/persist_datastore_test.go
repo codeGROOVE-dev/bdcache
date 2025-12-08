@@ -6,13 +6,13 @@ import (
 	"testing"
 	"time"
 
-	"github.com/codeGROOVE-dev/sfcache/pkg/persist"
+	"github.com/codeGROOVE-dev/sfcache"
 )
 
 // createTestStore creates a store for testing.
 // It tries to use a real Datastore if environment variables are set.
 // Otherwise, it falls back to the mock client from persist_datastore_mock_test.go.
-func createTestStore[K comparable, V any](t *testing.T, ctx context.Context) (store persist.Store[K, V], cleanup func()) {
+func createTestStore[K comparable, V any](t *testing.T, ctx context.Context) (store sfcache.Store[K, V], cleanup func()) {
 	t.Helper()
 
 	if os.Getenv("DATASTORE_EMULATOR_HOST") != "" || os.Getenv("GOOGLE_APPLICATION_CREDENTIALS") != "" {

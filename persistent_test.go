@@ -6,8 +6,6 @@ import (
 	"sync"
 	"testing"
 	"time"
-
-	"github.com/codeGROOVE-dev/sfcache/pkg/persist"
 )
 
 // mockStore is a simple in-memory store for testing.
@@ -101,8 +99,8 @@ func (m *mockStore[K, V]) Delete(ctx context.Context, key K) error {
 }
 
 //nolint:gocritic // Channel returns are clearer without named results
-func (m *mockStore[K, V]) LoadRecent(ctx context.Context, limit int) (<-chan persist.Entry[K, V], <-chan error) {
-	entryCh := make(chan persist.Entry[K, V], 10)
+func (m *mockStore[K, V]) LoadRecent(ctx context.Context, limit int) (<-chan Entry[K, V], <-chan error) {
+	entryCh := make(chan Entry[K, V], 10)
 	errCh := make(chan error, 1)
 
 	go func() {
@@ -129,7 +127,7 @@ func (m *mockStore[K, V]) LoadRecent(ctx context.Context, limit int) (<-chan per
 				key = sk
 			}
 
-			entryCh <- persist.Entry[K, V]{
+			entryCh <- Entry[K, V]{
 				Key:       key,
 				Value:     entry.value,
 				Expiry:    entry.expiry,

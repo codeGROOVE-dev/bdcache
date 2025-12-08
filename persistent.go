@@ -6,8 +6,6 @@ import (
 	"fmt"
 	"log/slog"
 	"time"
-
-	"github.com/codeGROOVE-dev/sfcache/pkg/persist"
 )
 
 // TieredCache is a cache with an in-memory layer backed by persistent storage.
@@ -19,7 +17,7 @@ type TieredCache[K comparable, V any] struct {
 	//   cache.Store.Len(ctx)
 	//   cache.Store.Flush(ctx)
 	//   cache.Store.Cleanup(ctx, maxAge)
-	Store persist.Store[K, V]
+	Store Store[K, V]
 
 	flights    [numFlightShards]flightGroup[K, V]
 	memory     *s3fifo[K, V]
@@ -44,7 +42,7 @@ type TieredCache[K comparable, V any] struct {
 //	cache.Set(ctx, "user:123", user, time.Hour)   // explicit TTL
 //	user, ok, err := cache.Get(ctx, "user:123")
 //	storeCount, _ := cache.Store.Len(ctx)
-func NewTiered[K comparable, V any](store persist.Store[K, V], opts ...Option) (*TieredCache[K, V], error) {
+func NewTiered[K comparable, V any](store Store[K, V], opts ...Option) (*TieredCache[K, V], error) {
 	cfg := defaultConfig()
 	for _, opt := range opts {
 		opt(cfg)

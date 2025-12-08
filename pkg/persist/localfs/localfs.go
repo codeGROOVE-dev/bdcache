@@ -16,7 +16,7 @@ import (
 	"sync"
 	"time"
 
-	"github.com/codeGROOVE-dev/sfcache/pkg/persist"
+	"github.com/codeGROOVE-dev/sfcache"
 )
 
 const maxKeyLength = 127 // Maximum key length to avoid filesystem constraints
@@ -49,7 +49,7 @@ type store[K comparable, V any] struct {
 // The cacheID is used as a subdirectory name under the OS cache directory.
 // If dir is provided (non-empty), it's used as the base directory instead of OS cache dir.
 // This is useful for testing with temporary directories.
-func New[K comparable, V any](cacheID string, dir string) (persist.Store[K, V], error) {
+func New[K comparable, V any](cacheID string, dir string) (sfcache.Store[K, V], error) {
 	// Validate cacheID to prevent path traversal attacks
 	if cacheID == "" {
 		return nil, errors.New("cacheID cannot be empty")
@@ -156,7 +156,7 @@ func (p *store[K, V]) Get(ctx context.Context, key K) (value V, expiry time.Time
 	}
 	reader.Reset(file)
 
-	var entry persist.Entry[K, V]
+	var entry sfcache.Entry[K, V]
 	dec := gob.NewDecoder(reader)
 	decErr := dec.Decode(&entry)
 
@@ -214,7 +214,7 @@ func (p *store[K, V]) Set(ctx context.Context, key K, value V, expiry time.Time)
 		p.subdirsMu.Unlock()
 	}
 
-	entry := persist.Entry[K, V]{
+	entry := sfcache.Entry[K, V]{
 		Key:       key,
 		Value:     value,
 		Expiry:    expiry,
@@ -279,8 +279,8 @@ func (p *store[K, V]) Delete(ctx context.Context, key K) error {
 // Errors encountered while reading individual files are collected and returned via the error channel.
 //
 //nolint:gocritic // unnamedResult - channel returns are self-documenting
-func (p *store[K, V]) LoadRecent(ctx context.Context, limit int) (<-chan persist.Entry[K, V], <-chan error) {
-	entryCh := make(chan persist.Entry[K, V], 100)
+func (p *store[K, V]) LoadRecent(ctx context.Context, limit int) (<-chan sfcache.Entry[K, V], <-chan error) {
+	entryCh := make(chan sfcache.Entry[K, V], 100)
 	errCh := make(chan error, 1)
 
 	go func() {
@@ -291,7 +291,7 @@ func (p *store[K, V]) LoadRecent(ctx context.Context, limit int) (<-chan persist
 		var errs []error
 
 		// Load all entries first to sort by UpdatedAt
-		var entries []persist.Entry[K, V]
+		var entries []sfcache.Entry[K, V]
 
 		// Walk the directory tree to support squid-style subdirectories
 		walkErr := filepath.Walk(p.Dir, func(path string, info os.FileInfo, err error) error {
@@ -324,7 +324,7 @@ func (p *store[K, V]) LoadRecent(ctx context.Context, limit int) (<-chan persist
 			}
 			reader.Reset(file)
 
-			var e persist.Entry[K, V]
+			var e sfcache.Entry[K, V]
 			dec := gob.NewDecoder(reader)
 			decErr := dec.Decode(&e)
 
@@ -427,7 +427,7 @@ func (p *store[K, V]) Cleanup(ctx context.Context, maxAge time.Duration) (int, e
 		}
 		reader.Reset(file)
 
-		var entry persist.Entry[K, V]
+		var entry sfcache.Entry[K, V]
 		decoder := gob.NewDecoder(reader)
 		decErr := decoder.Decode(&entry)
 

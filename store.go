@@ -1,5 +1,4 @@
-// Package persist defines the interface for sfcache persistence backends.
-package persist
+package sfcache
 
 import (
 	"context"
