@@ -22,6 +22,7 @@ Designed for persistently caching API requests in an unreliable environment, thi
   - [`pkg/persist/valkey`](pkg/persist/valkey) - Valkey/Redis
   - [`pkg/persist/cloudrun`](pkg/persist/cloudrun) - Auto-detect Cloud Run
 - **Per-item TTL** - Optional expiration
+- **Thundering herd prevention** - `GetSet` deduplicates concurrent loads for the same key
 - **Graceful degradation** - Cache works even if persistence fails
 - **Zero allocation reads** - minimal GC thrashing
 - **Type safe** - Go generics

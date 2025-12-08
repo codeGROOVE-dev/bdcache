@@ -21,6 +21,7 @@ type TieredCache[K comparable, V any] struct {
 	//   cache.Store.Cleanup(ctx, maxAge)
 	Store persist.Store[K, V]
 
+	flights    [numFlightShards]flightGroup[K, V]
 	memory     *s3fifo[K, V]
 	defaultTTL time.Duration
 }
@@ -164,6 +165,87 @@ func (c *TieredCache[K, V]) SetAsync(ctx context.Context, key K, value V, ttl ..
 	}()
 
 	return nil
+}
+
+// GetSet retrieves a value from the cache (memory or persistence), or calls loader to compute and store it.
+// This prevents thundering herd: if multiple goroutines request the same missing key
+// concurrently, only one loader runs while others wait for its result.
+//
+// Example:
+//
+//	user, err := cache.GetSet(ctx, "user:123", func(ctx context.Context) (User, error) {
+//	    return fetchUserFromAPI(ctx, "123")
+//	})
+//
+//	// Or with explicit TTL:
+//	user, err := cache.GetSet(ctx, "user:123", func(ctx context.Context) (User, error) {
+//	    return fetchUserFromAPI(ctx, "123")
+//	}, time.Hour)
+func (c *TieredCache[K, V]) GetSet(ctx context.Context, key K, loader func(context.Context) (V, error), ttl ...time.Duration) (V, error) {
+	var zero V
+
+	// Fast path: check memory cache first
+	if val, ok := c.memory.get(key); ok {
+		return val, nil
+	}
+
+	// Validate key before any persistence operations
+	if err := c.Store.ValidateKey(key); err != nil {
+		return zero, fmt.Errorf("invalid key: %w", err)
+	}
+
+	// Check persistence
+	val, expiry, found, err := c.Store.Get(ctx, key)
+	if err != nil {
+		return zero, fmt.Errorf("persistence load: %w", err)
+	}
+	if found {
+		// Add to memory cache for future hits
+		c.memory.set(key, val, timeToNano(expiry))
+		return val, nil
+	}
+
+	// Slow path: use flight group to ensure only one loader runs per key
+	idx := flightShard(key)
+	return c.flights[idx].do(key, func() (V, error) {
+		// Double-check memory (another goroutine may have populated it)
+		if val, ok := c.memory.get(key); ok {
+			return val, nil
+		}
+
+		// Double-check persistence
+		val, expiry, found, err := c.Store.Get(ctx, key)
+		if err != nil {
+			var zero V
+			return zero, fmt.Errorf("persistence load: %w", err)
+		}
+		if found {
+			c.memory.set(key, val, timeToNano(expiry))
+			return val, nil
+		}
+
+		// Call loader
+		val, err = loader(ctx)
+		if err != nil {
+			var zero V
+			return zero, err
+		}
+
+		// Store in both memory and persistence
+		var t time.Duration
+		if len(ttl) > 0 {
+			t = ttl[0]
+		}
+		exp := c.expiry(t)
+		c.memory.set(key, val, timeToNano(exp))
+
+		if err := c.Store.Set(ctx, key, val, exp); err != nil {
+			slog.Warn("GetSet persistence failed", "key", key, "error", err)
+			// Return the value anyway - memory cache has it
+		}
+
+		return val, nil
+	})
 }
 
 // Delete removes a value from the cache.

@@ -180,23 +180,12 @@ func newS3FIFO[K comparable, V any](cfg *config) *s3fifo[K, V] {
 		capacity = 16384
 	}
 
-	// More shards reduces lock contention but each shard needs enough
-	// entries for S3-FIFO to work effectively.
-	// For small caches, use single shard to match reference implementation behavior.
-	var nshards int
-	if capacity < 65536 {
-		// Use single shard for caches < 64K to match reference s3-fifo
-		nshards = 1
-	} else {
-		minShardSize := 256
-		if capacity < 262144 {
-			minShardSize = 2048 // Conservative for medium caches (< 256K)
-		}
-		nshards = min(runtime.GOMAXPROCS(0)*8, capacity/minShardSize, maxShards)
-		if nshards < 1 {
-			nshards = 1
-		}
-	}
+	// More shards reduces lock contention. Each shard should have at least
+	// a few entries for S3-FIFO to work, but we prioritize concurrency.
+	// Use at least GOMAXPROCS shards for parallel workloads.
+	minShards := runtime.GOMAXPROCS(0)
+	maxByCapacity := max(1, capacity/64) // At least 64 entries per shard
+	nshards := min(minShards, maxByCapacity, maxShards)
 	// Round to power of 2 for fast modulo.
 	//nolint:gosec // G115: nshards bounded by [1, maxShards]
 	nshards = 1 << (bits.Len(uint(nshards)) - 1)
@@ -435,10 +424,10 @@ func (s *shard[K, V]) get(key K) (V, bool) {
 		return zero, false
 	}
 
-	// S3-FIFO: Mark as accessed for lazy promotion.
-	// Fast path: check if already at max freq
+	// S3-FIFO: increment frequency for promotion decisions.
+	// Skip if already at max (3) to reduce contention on hot keys.
 	if f := ent.freq.Load(); f < 3 {
-		ent.freq.Store(f + 1)
+		ent.freq.Add(1)
 	}
 
 	return val, true

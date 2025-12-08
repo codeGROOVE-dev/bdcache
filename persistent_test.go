@@ -1003,3 +1003,248 @@ func TestNewTiered_WithTTL_Behavior(t *testing.T) {
 		t.Error("Item with explicit longer TTL should still exist in memory")
 	}
 }
+
+func TestTieredCache_GetSet_Basic(t *testing.T) {
+	store := newMockStore[string, int]()
+	cache, err := NewTiered[string, int](store)
+	if err != nil {
+		t.Fatalf("NewTiered failed: %v", err)
+	}
+	defer func() { _ = cache.Close() }() //nolint:errcheck // Test cleanup
+
+	ctx := context.Background()
+	loaderCalls := 0
+	loader := func(ctx context.Context) (int, error) {
+		loaderCalls++
+		return 42, nil
+	}
+
+	// First call - should call loader
+	val, err := cache.GetSet(ctx, "key1", loader)
+	if err != nil {
+		t.Fatalf("GetSet error: %v", err)
+	}
+	if val != 42 {
+		t.Errorf("GetSet value = %d; want 42", val)
+	}
+	if loaderCalls != 1 {
+		t.Errorf("loader calls = %d; want 1", loaderCalls)
+	}
+
+	// Second call - should use cached value, not call loader
+	val, err = cache.GetSet(ctx, "key1", loader)
+	if err != nil {
+		t.Fatalf("GetSet error: %v", err)
+	}
+	if val != 42 {
+		t.Errorf("GetSet value = %d; want 42", val)
+	}
+	if loaderCalls != 1 {
+		t.Errorf("loader calls = %d; want 1 (should use cache)", loaderCalls)
+	}
+
+	// Value should be in persistence too
+	pVal, _, found, _ := store.Get(ctx, "key1") //nolint:errcheck // Test helper
+	if !found {
+		t.Error("value should be persisted")
+	}
+	if pVal != 42 {
+		t.Errorf("persisted value = %d; want 42", pVal)
+	}
+}
+
+func TestTieredCache_GetSet_FromPersistence(t *testing.T) {
+	store := newMockStore[string, int]()
+	cache, err := NewTiered[string, int](store)
+	if err != nil {
+		t.Fatalf("NewTiered failed: %v", err)
+	}
+	defer func() { _ = cache.Close() }() //nolint:errcheck // Test cleanup
+
+	ctx := context.Background()
+
+	// Pre-populate persistence directly
+	_ = store.Set(ctx, "key1", 99, time.Now().Add(time.Hour)) //nolint:errcheck // Test setup
+
+	loaderCalls := 0
+	loader := func(ctx context.Context) (int, error) {
+		loaderCalls++
+		return 42, nil
+	}
+
+	// GetSet should find value in persistence, not call loader
+	val, err := cache.GetSet(ctx, "key1", loader)
+	if err != nil {
+		t.Fatalf("GetSet error: %v", err)
+	}
+	if val != 99 {
+		t.Errorf("GetSet value = %d; want 99 (from persistence)", val)
+	}
+	if loaderCalls != 0 {
+		t.Errorf("loader calls = %d; want 0 (should use persistence)", loaderCalls)
+	}
+}
+
+func TestTieredCache_GetSet_LoaderError(t *testing.T) {
+	store := newMockStore[string, int]()
+	cache, err := NewTiered[string, int](store)
+	if err != nil {
+		t.Fatalf("NewTiered failed: %v", err)
+	}
+	defer func() { _ = cache.Close() }() //nolint:errcheck // Test cleanup
+
+	ctx := context.Background()
+	loader := func(ctx context.Context) (int, error) {
+		return 0, fmt.Errorf("loader error")
+	}
+
+	_, err = cache.GetSet(ctx, "key1", loader)
+	if err == nil {
+		t.Fatal("GetSet should return error from loader")
+	}
+
+	// Value should not be cached in memory
+	_, found := cache.memory.get("key1")
+	if found {
+		t.Error("failed loader should not cache a value in memory")
+	}
+
+	// Value should not be in persistence
+	_, _, found, err = store.Get(ctx, "key1")
+	if err != nil {
+		t.Fatalf("store.Get error: %v", err)
+	}
+	if found {
+		t.Error("failed loader should not persist a value")
+	}
+}
+
+func TestTieredCache_GetSet_ThunderingHerd(t *testing.T) {
+	store := newMockStore[string, int]()
+	cache, err := NewTiered[string, int](store)
+	if err != nil {
+		t.Fatalf("NewTiered failed: %v", err)
+	}
+	defer func() { _ = cache.Close() }() //nolint:errcheck // Test cleanup
+
+	ctx := context.Background()
+	var loaderCalls int32
+	var mu sync.Mutex
+	loader := func(_ context.Context) (int, error) {
+		mu.Lock()
+		loaderCalls++
+		count := loaderCalls // Capture for potential error simulation
+		mu.Unlock()
+		time.Sleep(50 * time.Millisecond) // Simulate slow operation (e.g., HTTP fetch)
+		// Return error on hypothetical second call (won't happen due to singleflight)
+		if count > 1 {
+			return 0, fmt.Errorf("unexpected second call")
+		}
+		return 42, nil
+	}
+
+	// Launch many concurrent GetSet calls for the same key
+	var wg sync.WaitGroup
+	results := make([]int, 100)
+	errors := make([]error, 100)
+
+	for i := range 100 {
+		wg.Add(1)
+		go func(idx int) {
+			defer wg.Done()
+			results[idx], errors[idx] = cache.GetSet(ctx, "key1", loader)
+		}(i)
+	}
+
+	wg.Wait()
+
+	// All goroutines should get the same result
+	for i := range 100 {
+		if errors[i] != nil {
+			t.Errorf("goroutine %d error: %v", i, errors[i])
+		}
+		if results[i] != 42 {
+			t.Errorf("goroutine %d result = %d; want 42", i, results[i])
+		}
+	}
+
+	// Loader should only be called once (thundering herd prevented)
+	if loaderCalls != 1 {
+		t.Errorf("loader calls = %d; want 1 (thundering herd prevention failed)", loaderCalls)
+	}
+}
+
+func TestTieredCache_GetSet_WithTTL(t *testing.T) {
+	store := newMockStore[string, int]()
+	cache, err := NewTiered[string, int](store)
+	if err != nil {
+		t.Fatalf("NewTiered failed: %v", err)
+	}
+	defer func() { _ = cache.Close() }() //nolint:errcheck // Test cleanup
+
+	ctx := context.Background()
+	loaderCalls := 0
+	loader := func(ctx context.Context) (int, error) {
+		loaderCalls++
+		return loaderCalls * 10, nil
+	}
+
+	// First call with short TTL
+	val, err := cache.GetSet(ctx, "key1", loader, 50*time.Millisecond)
+	if err != nil {
+		t.Fatalf("GetSet error: %v", err)
+	}
+	if val != 10 {
+		t.Errorf("first GetSet value = %d; want 10", val)
+	}
+
+	// Wait for TTL to expire
+	time.Sleep(100 * time.Millisecond)
+
+	// Second call - should call loader again (cache expired)
+	val, err = cache.GetSet(ctx, "key1", loader, 50*time.Millisecond)
+	if err != nil {
+		t.Fatalf("GetSet error: %v", err)
+	}
+	if val != 20 {
+		t.Errorf("second GetSet value = %d; want 20", val)
+	}
+	if loaderCalls != 2 {
+		t.Errorf("loader calls = %d; want 2", loaderCalls)
+	}
+}
+
+func TestTieredCache_GetSet_PersistenceFailure(t *testing.T) {
+	store := newMockStore[string, int]()
+	cache, err := NewTiered[string, int](store)
+	if err != nil {
+		t.Fatalf("NewTiered failed: %v", err)
+	}
+	defer func() { _ = cache.Close() }() //nolint:errcheck // Test cleanup
+
+	ctx := context.Background()
+	loader := func(ctx context.Context) (int, error) {
+		return 42, nil
+	}
+
+	// Make persistence fail
+	store.setFailSet(true)
+
+	// GetSet should still succeed (value in memory)
+	val, err := cache.GetSet(ctx, "key1", loader)
+	if err != nil {
+		t.Fatalf("GetSet should succeed even if persistence fails: %v", err)
+	}
+	if val != 42 {
+		t.Errorf("GetSet value = %d; want 42", val)
+	}
+
+	// Value should be in memory
+	memVal, found := cache.memory.get("key1")
+	if !found {
+		t.Error("value should be in memory cache")
+	}
+	if memVal != 42 {
+		t.Errorf("memory value = %d; want 42", memVal)
+	}
+}

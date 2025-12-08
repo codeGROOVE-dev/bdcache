@@ -3,6 +3,7 @@ package sfcache
 import (
 	"fmt"
 	"sync"
+	"sync/atomic"
 	"testing"
 	"time"
 )
@@ -421,5 +422,199 @@ func TestMemoryCache_Set_NoDefaultTTL(t *testing.T) {
 	val, found := cache.Get("no-expiry")
 	if !found || val != 42 {
 		t.Error("no-expiry should still exist (no TTL means no expiry)")
+	}
+}
+
+func TestMemoryCache_GetSet_Basic(t *testing.T) {
+	cache := New[string, int]()
+	defer cache.Close()
+
+	loaderCalls := 0
+	loader := func() (int, error) {
+		loaderCalls++
+		return 42, nil
+	}
+
+	// First call - should call loader
+	val, err := cache.GetSet("key1", loader)
+	if err != nil {
+		t.Fatalf("GetSet error: %v", err)
+	}
+	if val != 42 {
+		t.Errorf("GetSet value = %d; want 42", val)
+	}
+	if loaderCalls != 1 {
+		t.Errorf("loader calls = %d; want 1", loaderCalls)
+	}
+
+	// Second call - should use cached value, not call loader
+	val, err = cache.GetSet("key1", loader)
+	if err != nil {
+		t.Fatalf("GetSet error: %v", err)
+	}
+	if val != 42 {
+		t.Errorf("GetSet value = %d; want 42", val)
+	}
+	if loaderCalls != 1 {
+		t.Errorf("loader calls = %d; want 1 (should use cache)", loaderCalls)
+	}
+}
+
+func TestMemoryCache_GetSet_LoaderError(t *testing.T) {
+	cache := New[string, int]()
+	defer cache.Close()
+
+	loader := func() (int, error) {
+		return 0, fmt.Errorf("loader error")
+	}
+
+	_, err := cache.GetSet("key1", loader)
+	if err == nil {
+		t.Fatal("GetSet should return error from loader")
+	}
+
+	// Value should not be cached
+	_, found := cache.Get("key1")
+	if found {
+		t.Error("failed loader should not cache a value")
+	}
+}
+
+func TestMemoryCache_GetSet_ThunderingHerd(t *testing.T) {
+	cache := New[string, int]()
+	defer cache.Close()
+
+	var loaderCalls int32
+	var mu sync.Mutex
+	loader := func() (int, error) {
+		mu.Lock()
+		loaderCalls++
+		count := loaderCalls // Capture for potential error simulation
+		mu.Unlock()
+		time.Sleep(50 * time.Millisecond) // Simulate slow operation
+		// Return error on hypothetical second call (won't happen due to singleflight)
+		if count > 1 {
+			return 0, fmt.Errorf("unexpected second call")
+		}
+		return 42, nil
+	}
+
+	// Launch many concurrent GetSet calls for the same key
+	var wg sync.WaitGroup
+	results := make([]int, 100)
+	errors := make([]error, 100)
+
+	for i := range 100 {
+		wg.Add(1)
+		go func(idx int) {
+			defer wg.Done()
+			results[idx], errors[idx] = cache.GetSet("key1", loader)
+		}(i)
+	}
+
+	wg.Wait()
+
+	// All goroutines should get the same result
+	for i := range 100 {
+		if errors[i] != nil {
+			t.Errorf("goroutine %d error: %v", i, errors[i])
+		}
+		if results[i] != 42 {
+			t.Errorf("goroutine %d result = %d; want 42", i, results[i])
+		}
+	}
+
+	// Loader should only be called once (thundering herd prevented)
+	if loaderCalls != 1 {
+		t.Errorf("loader calls = %d; want 1 (thundering herd prevention failed)", loaderCalls)
+	}
+}
+
+func TestMemoryCache_GetSet_WithTTL(t *testing.T) {
+	cache := New[string, int]()
+	defer cache.Close()
+
+	loaderCalls := 0
+	loader := func() (int, error) {
+		loaderCalls++
+		return loaderCalls * 10, nil
+	}
+
+	// First call with short TTL
+	val, err := cache.GetSet("key1", loader, 50*time.Millisecond)
+	if err != nil {
+		t.Fatalf("GetSet error: %v", err)
+	}
+	if val != 10 {
+		t.Errorf("first GetSet value = %d; want 10", val)
+	}
+
+	// Wait for TTL to expire
+	time.Sleep(100 * time.Millisecond)
+
+	// Second call - should call loader again (cache expired)
+	val, err = cache.GetSet("key1", loader, 50*time.Millisecond)
+	if err != nil {
+		t.Fatalf("GetSet error: %v", err)
+	}
+	if val != 20 {
+		t.Errorf("second GetSet value = %d; want 20", val)
+	}
+	if loaderCalls != 2 {
+		t.Errorf("loader calls = %d; want 2", loaderCalls)
+	}
+}
+
+func TestMemoryCache_GetSet_IntKeys(t *testing.T) {
+	cache := New[int, int](Size(1000))
+	defer cache.Close()
+
+	var loaderCalls int32
+	loader := func() (int, error) {
+		atomic.AddInt32(&loaderCalls, 1)
+		time.Sleep(10 * time.Millisecond)
+		return 42, nil
+	}
+
+	// Test thundering herd with int keys (uses different flightShard path)
+	var wg sync.WaitGroup
+	for i := range 50 {
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			// All goroutines request the same key
+			val, err := cache.GetSet(123, loader)
+			if err != nil {
+				t.Errorf("GetSet error: %v", err)
+			}
+			if val != 42 {
+				t.Errorf("GetSet value = %d; want 42", val)
+			}
+		}()
+		// Stagger slightly to ensure overlap
+		if i%10 == 0 {
+			time.Sleep(time.Millisecond)
+		}
+	}
+	wg.Wait()
+
+	if loaderCalls != 1 {
+		t.Errorf("loader calls = %d; want 1", loaderCalls)
+	}
+
+	// Verify different int keys work independently
+	loaderCalls = 0
+	for i := range 10 {
+		_, err := cache.GetSet(i, func() (int, error) {
+			atomic.AddInt32(&loaderCalls, 1)
+			return i * 10, nil
+		})
+		if err != nil {
+			t.Fatalf("GetSet key %d error: %v", i, err)
+		}
+	}
+
+	if loaderCalls != 10 {
+		t.Errorf("loader calls = %d; want 10 (one per unique key)", loaderCalls)
 	}
 }

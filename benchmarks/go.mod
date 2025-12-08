@@ -17,6 +17,7 @@ require (
 	github.com/codeGROOVE-dev/sfcache/pkg/persist v1.1.4 // indirect
 	github.com/dustin/go-humanize v1.0.1 // indirect
 	github.com/pkg/errors v0.9.1 // indirect
+	golang.org/x/sync v0.19.0 // indirect
 	golang.org/x/sys v0.34.0 // indirect
 )
 
