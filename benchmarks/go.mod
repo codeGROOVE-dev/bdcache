@@ -14,12 +14,9 @@ require (
 
 require (
 	github.com/cespare/xxhash/v2 v2.3.0 // indirect
-	github.com/codeGROOVE-dev/sfcache/pkg/persist v1.2.1 // indirect
 	github.com/dustin/go-humanize v1.0.1 // indirect
 	github.com/pkg/errors v0.9.1 // indirect
 	golang.org/x/sys v0.39.0 // indirect
 )
 
 replace github.com/codeGROOVE-dev/sfcache => ../
-
-replace github.com/codeGROOVE-dev/sfcache/pkg/persist => ../pkg/persist
