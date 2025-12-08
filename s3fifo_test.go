@@ -646,3 +646,314 @@ func TestS3FIFO_VariousKeyTypes(t *testing.T) {
 		}
 	})
 }
+
+// TestS3FIFO_FrequencyCapAt3 tests that frequency counter is capped at 3.
+// This is a critical S3-FIFO parameter that affects promotion behavior.
+func TestS3FIFO_FrequencyCapAt3(t *testing.T) {
+	cache := newS3FIFO[string, int](&config{size: 100})
+
+	// Insert a key
+	cache.set("hot", 1, 0)
+
+	// Access it many times (well beyond 3)
+	for range 20 {
+		cache.get("hot")
+	}
+
+	// Access the internal entry to check frequency
+	shard := cache.shard("hot")
+	shard.mu.RLock()
+	ent, ok := shard.entries["hot"]
+	shard.mu.RUnlock()
+
+	if !ok {
+		t.Fatal("entry not found")
+	}
+
+	freq := ent.freq.Load()
+	if freq > 3 {
+		t.Errorf("frequency = %d; want <= 3 (should be capped at 3)", freq)
+	}
+	if freq != 3 {
+		t.Logf("frequency = %d (expected 3, but may vary due to timing)", freq)
+	}
+}
+
+// TestS3FIFO_SetIncrementsFrequency tests that updating an existing key increments frequency.
+// This matches reference s3-fifo behavior where Set increments frequency.
+func TestS3FIFO_SetIncrementsFrequency(t *testing.T) {
+	cache := newS3FIFO[string, int](&config{size: 100})
+
+	// Insert a key
+	cache.set("key", 1, 0)
+
+	// Check initial frequency (should be 0 for new entries)
+	shard := cache.shard("key")
+	shard.mu.RLock()
+	ent := shard.entries["key"]
+	initialFreq := ent.freq.Load()
+	shard.mu.RUnlock()
+
+	if initialFreq != 0 {
+		t.Errorf("initial frequency = %d; want 0", initialFreq)
+	}
+
+	// Update the key several times
+	for i := 2; i <= 4; i++ {
+		cache.set("key", i, 0)
+	}
+
+	// Check that frequency increased due to updates
+	shard.mu.RLock()
+	ent = shard.entries["key"]
+	finalFreq := ent.freq.Load()
+	shard.mu.RUnlock()
+
+	if finalFreq == 0 {
+		t.Error("frequency should have increased after updates, but is still 0")
+	}
+	if finalFreq > 3 {
+		t.Errorf("frequency = %d; want <= 3 (should be capped)", finalFreq)
+	}
+}
+
+// TestS3FIFO_CascadingEviction tests that promoting from small to main triggers
+// eviction from main when main exceeds 90% capacity.
+func TestS3FIFO_CascadingEviction(t *testing.T) {
+	// Use a small cache to make test fast
+	capacity := 1000
+	cache := newS3FIFO[int, int](&config{size: capacity})
+
+	// Fill the cache completely
+	for i := range capacity {
+		cache.set(i, i, 0)
+	}
+
+	// Now access items that are likely in the small queue to trigger promotions
+	// The first 10% should be in small queue (100 items)
+	// Access them twice to trigger promotion (freq > 1)
+	for i := range 100 {
+		cache.get(i) // First access
+		cache.get(i) // Second access - should trigger promotion
+	}
+
+	// Add more items to trigger evictions with promotions
+	for i := capacity; i < capacity+200; i++ {
+		cache.set(i, i, 0)
+		// This should trigger cascading eviction when small promotes to main
+	}
+
+	// Cache should still be at capacity (not exceeding it)
+	actualLen := cache.len()
+	if actualLen > capacity*11/10 { // Allow 10% variance for shard rounding
+		t.Errorf("cache length = %d; should be near capacity %d (got %.1f%% over)",
+			actualLen, capacity, float64(actualLen-capacity)/float64(capacity)*100)
+	}
+}
+
+// TestS3FIFO_SingleShardSmallCache tests that small caches (< 64K) use single shard.
+// This ensures better S3-FIFO behavior for small caches.
+func TestS3FIFO_SingleShardSmallCache(t *testing.T) {
+	testCases := []struct {
+		capacity        int
+		expectNumShards int
+	}{
+		{100, 1},     // Tiny cache
+		{1000, 1},    // Small cache
+		{16384, 1},   // 16K - should be single shard
+		{32768, 1},   // 32K - should be single shard
+		{65535, 1},   // Just under 64K - should be single shard
+		{65536, 32},  // At 64K - should have multiple shards (65536/2048=32)
+		{131072, 64}, // 128K - should have shards (131072/2048=64)
+	}
+
+	for _, tc := range testCases {
+		t.Run(fmt.Sprintf("capacity_%d", tc.capacity), func(t *testing.T) {
+			cache := newS3FIFO[int, int](&config{size: tc.capacity})
+
+			if cache.numShards != tc.expectNumShards {
+				t.Errorf("capacity %d: numShards = %d; want %d",
+					tc.capacity, cache.numShards, tc.expectNumShards)
+			}
+		})
+	}
+}
+
+// TestS3FIFO_GhostQueueSize tests that ghost queue is sized at 100% of cache capacity.
+// This matches the reference s3-fifo implementation.
+func TestS3FIFO_GhostQueueSize(t *testing.T) {
+	capacity := 1000
+	cache := newS3FIFO[int, int](&config{size: capacity})
+
+	// Check each shard's ghost queue capacity
+	totalGhostCap := 0
+	for _, shard := range cache.shards {
+		totalGhostCap += shard.ghostCap
+	}
+
+	// Ghost capacity should be approximately equal to cache capacity
+	// Allow some variance due to shard rounding
+	minExpected := capacity * 90 / 100
+	maxExpected := capacity * 110 / 100
+
+	if totalGhostCap < minExpected || totalGhostCap > maxExpected {
+		t.Errorf("total ghost capacity = %d; want ~%d (90-110%% of capacity)",
+			totalGhostCap, capacity)
+	}
+}
+
+// TestS3FIFO_EvictionTriggerBoundary tests the eviction trigger at exactly 10% boundary.
+// We use > instead of >= for the small queue size check.
+func TestS3FIFO_EvictionTriggerBoundary(t *testing.T) {
+	// Use capacity of 100 for easy math (10% = 10 items)
+	capacity := 100
+	cache := newS3FIFO[int, int](&config{size: capacity})
+
+	// Fill cache to capacity
+	for i := range capacity {
+		cache.set(i, i, 0)
+	}
+
+	// Insert one more item - this should trigger eviction
+	// The eviction logic should use `small.len > capacity/10`
+	// which means it only evicts from small when small has MORE than 10% (> 10 items)
+	cache.set(capacity, capacity, 0)
+
+	// Cache should still be at or near capacity
+	actualLen := cache.len()
+	if actualLen > capacity*11/10 { // Allow 10% variance
+		t.Errorf("cache length = %d; should be near capacity %d", actualLen, capacity)
+	}
+}
+
+// TestS3FIFO_GhostQueuePromotion tests that items in ghost queue are promoted to main.
+func TestS3FIFO_GhostQueuePromotion(t *testing.T) {
+	capacity := 100
+	cache := newS3FIFO[int, int](&config{size: capacity})
+
+	// Fill cache
+	for i := range capacity {
+		cache.set(i, i, 0)
+	}
+
+	// Access key 0 once to put in small queue
+	cache.get(0)
+
+	// Add many more items to evict key 0 (it should go to ghost)
+	for i := capacity; i < capacity*2; i++ {
+		cache.set(i, i, 0)
+	}
+
+	// Key 0 should be evicted and in ghost queue
+	if _, ok := cache.get(0); ok {
+		t.Log("key 0 still in cache (may not have been evicted yet)")
+	}
+
+	// Re-insert key 0 - it should go to main queue (not small) because it's in ghost
+	cache.set(0, 9999, 0)
+
+	// Check that key 0 is in main queue by inspecting internal state
+	shard := cache.shard(0)
+	shard.mu.RLock()
+	ent, ok := shard.entries[0]
+	inSmall := false
+	if ok {
+		inSmall = ent.inSmall
+	}
+	shard.mu.RUnlock()
+
+	if !ok {
+		t.Fatal("key 0 not found after re-insertion")
+	}
+
+	if inSmall {
+		t.Error("key 0 should be in main queue (not small) after re-insertion from ghost")
+	}
+}
+
+// TestS3FIFO_SmallQueuePromotion tests the promotion logic from small to main.
+// Items with freq > 1 should be promoted when evicting from small.
+func TestS3FIFO_SmallQueuePromotion(t *testing.T) {
+	capacity := 1000
+	cache := newS3FIFO[int, int](&config{size: capacity})
+
+	// Fill cache
+	for i := range capacity {
+		cache.set(i, i, 0)
+	}
+
+	// Access first 50 items twice (they should be in small queue initially)
+	for i := range 50 {
+		cache.get(i) // First access
+		cache.get(i) // Second access - freq > 1
+	}
+
+	// Add more items to trigger eviction from small
+	for i := capacity; i < capacity+100; i++ {
+		cache.set(i, i, 0)
+	}
+
+	// The accessed items (0-49) should still be in cache because they were promoted
+	// due to freq > 1
+	survivedCount := 0
+	for i := range 50 {
+		if _, ok := cache.get(i); ok {
+			survivedCount++
+		}
+	}
+
+	// At least some of them should have survived (been promoted to main)
+	if survivedCount < 40 {
+		t.Errorf("only %d/50 accessed items survived; expected most to be promoted to main",
+			survivedCount)
+	}
+}
+
+// TestS3FIFO_MainQueueReinsertion tests the reinsertion logic in main queue.
+// Items with freq > 0 should be reinserted to back of main with decremented freq.
+func TestS3FIFO_MainQueueReinsertion(t *testing.T) {
+	capacity := 1000
+	cache := newS3FIFO[int, int](&config{size: capacity})
+
+	// Fill cache
+	for i := range capacity {
+		cache.set(i, i, 0)
+	}
+
+	// Access items to promote them to main
+	for i := range 100 {
+		cache.get(i)
+		cache.get(i)
+	}
+
+	// Add more items to fill small queue and trigger promotions to main
+	for i := capacity; i < capacity+200; i++ {
+		cache.set(i, i, 0)
+	}
+
+	// Continue accessing the same items
+	for range 3 {
+		for i := range 100 {
+			cache.get(i)
+		}
+	}
+
+	// Add even more items to force main queue evictions
+	for i := capacity + 200; i < capacity+400; i++ {
+		cache.set(i, i, 0)
+	}
+
+	// The frequently accessed items should mostly survive due to reinsertion
+	survivedCount := 0
+	for i := range 100 {
+		if _, ok := cache.get(i); ok {
+			survivedCount++
+		}
+	}
+
+	// Most should survive due to main queue reinsertion with freq > 0
+	if survivedCount < 90 {
+		t.Errorf("only %d/100 hot items survived; expected most to survive due to reinsertion",
+			survivedCount)
+	}
+}

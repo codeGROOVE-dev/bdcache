@@ -181,10 +181,21 @@ func newS3FIFO[K comparable, V any](cfg *config) *s3fifo[K, V] {
 	}
 
 	// More shards reduces lock contention but each shard needs enough
-	// entries for S3-FIFO to work (32 min gives 3 small + 29 main).
-	nshards := min(runtime.GOMAXPROCS(0)*8, capacity/32, maxShards)
-	if nshards < 1 {
+	// entries for S3-FIFO to work effectively.
+	// For small caches, use single shard to match reference implementation behavior.
+	var nshards int
+	if capacity < 65536 {
+		// Use single shard for caches < 64K to match reference s3-fifo
 		nshards = 1
+	} else {
+		minShardSize := 256
+		if capacity < 262144 {
+			minShardSize = 2048 // Conservative for medium caches (< 256K)
+		}
+		nshards = min(runtime.GOMAXPROCS(0)*8, capacity/minShardSize, maxShards)
+		if nshards < 1 {
+			nshards = 1
+		}
 	}
 	// Round to power of 2 for fast modulo.
 	//nolint:gosec // G115: nshards bounded by [1, maxShards]
@@ -212,10 +223,10 @@ func newS3FIFO[K comparable, V any](cfg *config) *s3fifo[K, V] {
 	}
 
 	// S3-FIFO paper recommends small queue at 10% of total capacity.
-	// Ghost queue at 19% provides optimal balance for varied workloads.
+	// Ghost queue at 100% matches reference implementation for better hit rate.
 	var smallRatio, ghostRatio float64
 	smallRatio = 0.10
-	ghostRatio = 0.19
+	ghostRatio = 1.0
 
 	// Prepare hasher for Bloom filter
 	var hasher func(K) uint64
@@ -284,7 +295,7 @@ func newShard[K comparable, V any](capacity int, smallRatio, ghostRatio float64,
 	return s
 }
 
-func (s *shard[K, V]) getEntry() *entry[K, V] {
+func (s *shard[K, V]) newEntry() *entry[K, V] {
 	if s.freeEntries != nil {
 		e := s.freeEntries
 		s.freeEntries = e.next
@@ -372,7 +383,7 @@ func (c *s3fifo[K, V]) get(key K) (V, bool) {
 			return zero, false
 		}
 
-		if f := ent.freq.Load(); f < 63 {
+		if f := ent.freq.Load(); f < 3 {
 			ent.freq.Store(f + 1)
 		}
 		return val, true
@@ -396,7 +407,7 @@ func (c *s3fifo[K, V]) get(key K) (V, bool) {
 			return zero, false
 		}
 
-		if f := ent.freq.Load(); f < 63 {
+		if f := ent.freq.Load(); f < 3 {
 			ent.freq.Store(f + 1)
 		}
 		return val, true
@@ -426,7 +437,7 @@ func (s *shard[K, V]) get(key K) (V, bool) {
 
 	// S3-FIFO: Mark as accessed for lazy promotion.
 	// Fast path: check if already at max freq
-	if f := ent.freq.Load(); f < 63 {
+	if f := ent.freq.Load(); f < 3 {
 		ent.freq.Store(f + 1)
 	}
 
@@ -455,6 +466,10 @@ func (s *shard[K, V]) set(key K, value V, expiryNano int64) {
 	if ent, ok := s.entries[key]; ok {
 		ent.value = value
 		ent.expiryNano = expiryNano
+		// Increment frequency on update (like reference s3-fifo)
+		if f := ent.freq.Load(); f < 3 {
+			ent.freq.Store(f + 1)
+		}
 		s.mu.Unlock()
 		return
 	}
@@ -469,7 +484,7 @@ func (s *shard[K, V]) set(key K, value V, expiryNano int64) {
 	}
 
 	// Create new entry
-	ent := s.getEntry()
+	ent := s.newEntry()
 	ent.key = key
 	ent.value = value
 	ent.expiryNano = expiryNano
@@ -477,7 +492,8 @@ func (s *shard[K, V]) set(key K, value V, expiryNano int64) {
 
 	// Evict when at capacity (no overflow buffer)
 	for s.small.len+s.main.len >= s.capacity {
-		if s.small.len >= s.smallCap {
+		// Use > instead of >= to match reference implementation
+		if s.small.len > s.capacity/10 {
 			s.evictFromSmall()
 		} else {
 			s.evictFromMain()
@@ -524,6 +540,8 @@ func (s *shard[K, V]) delete(key K) {
 // Items accessed more than once (freq > 1) are promoted to Main,
 // items with freq <= 1 are evicted to ghost queue.
 func (s *shard[K, V]) evictFromSmall() {
+	mainCap := (s.capacity * 9) / 10 // 90% for main queue
+
 	for s.small.len > 0 {
 		ent := s.small.front()
 		s.small.remove(ent)
@@ -532,7 +550,18 @@ func (s *shard[K, V]) evictFromSmall() {
 		if ent.freq.Load() <= 1 {
 			// Not accessed enough - evict and track in ghost
 			delete(s.entries, ent.key)
-			s.addToGhost(ent.key)
+
+			// Add to ghost queue using two rotating Bloom filters
+			h := s.hasher(ent.key)
+			if !s.ghostActive.Contains(h) {
+				s.ghostActive.Add(h)
+			}
+			// Rotate filters when active is full (provides approximate FIFO)
+			if s.ghostActive.entries >= s.ghostCap {
+				s.ghostAging.Reset()
+				s.ghostActive, s.ghostAging = s.ghostAging, s.ghostActive
+			}
+
 			s.putEntry(ent)
 			return
 		}
@@ -542,6 +571,11 @@ func (s *shard[K, V]) evictFromSmall() {
 		ent.freq.Store(0)
 		ent.inSmall = false
 		s.main.pushBack(ent)
+
+		// Cascade eviction if main queue exceeds capacity
+		if s.main.len > mainCap {
+			s.evictFromMain()
+		}
 	}
 }
 
@@ -565,21 +599,6 @@ func (s *shard[K, V]) evictFromMain() {
 		// Decrement frequency
 		ent.freq.Store(f - 1)
 		s.main.pushBack(ent)
-	}
-}
-
-// addToGhost adds a key to the ghost queue using two rotating Bloom filters.
-func (s *shard[K, V]) addToGhost(key K) {
-	h := s.hasher(key)
-	if !s.ghostActive.Contains(h) {
-		s.ghostActive.Add(h)
-	}
-
-	// Rotate filters when active is full (provides approximate FIFO)
-	if s.ghostActive.entries >= s.ghostCap {
-		// Reset aging filter and swap - aging becomes new active
-		s.ghostAging.Reset()
-		s.ghostActive, s.ghostAging = s.ghostAging, s.ghostActive
 	}
 }
 
