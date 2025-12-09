@@ -48,7 +48,7 @@ import (
 )
 
 p, _ := localfs.New[string, User]("myapp", "")
-cache, _ := sfcache.NewTiered[string, User](p)
+cache, _ := sfcache.NewTiered(p)
 
 cache.SetAsync(ctx, "user:123", user) // Don't wait for the key to persist
 cache.Store.Len(ctx)                  // Access persistence layer directly
@@ -60,7 +60,7 @@ How about a persistent cache suitable for Cloud Run or local development? This u
 import "github.com/codeGROOVE-dev/sfcache/pkg/persist/cloudrun"
 
 p, _ := cloudrun.New[string, User](ctx, "myapp")
-cache, _ := sfcache.NewTiered[string, User](p)
+cache, _ := sfcache.NewTiered(p)
 ```
 
 ## Performance against the Competition
