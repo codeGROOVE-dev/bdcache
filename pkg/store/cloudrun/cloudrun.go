@@ -8,8 +8,8 @@ import (
 	"os"
 	"time"
 
-	"github.com/codeGROOVE-dev/sfcache/pkg/persist/datastore"
-	"github.com/codeGROOVE-dev/sfcache/pkg/persist/localfs"
+	"github.com/codeGROOVE-dev/sfcache/pkg/store/datastore"
+	"github.com/codeGROOVE-dev/sfcache/pkg/store/localfs"
 )
 
 // Store is the persistence interface returned by New.

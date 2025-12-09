@@ -16,16 +16,17 @@ Designed for persistently caching API requests in an unreliable environment, thi
 
 - **Faster than a bat out of hell** - Best-in-class latency and throughput
 - **S3-FIFO eviction** - Better hit-rates than LRU ([learn more](https://s3fifo.com/))
-- **L2 Persistence (optional)** - Bring your own database or use built-in backends:
-  - [`pkg/persist/localfs`](pkg/persist/localfs) - Local files (gob encoding, zero dependencies)
-  - [`pkg/persist/datastore`](pkg/persist/datastore) - Google Cloud Datastore
-  - [`pkg/persist/valkey`](pkg/persist/valkey) - Valkey/Redis
-  - [`pkg/persist/cloudrun`](pkg/persist/cloudrun) - Auto-detect Cloud Run
+- **Multi-tier persistent cache (optional)** - Bring your own database or use built-in backends:
+  - [`pkg/store/cloudrun`](pkg/store/cloudrun) - Automatically select Google Cloud Datastore in Cloud Run, localfs elsewhere
+  - [`pkg/store/datastore`](pkg/store/datastore) - Google Cloud Datastore
+  - [`pkg/store/localfs`](pkg/store/localfs) - Local files (gob encoding, zero dependencies)
+  - [`pkg/store/null`](pkg/store/null) - No-op (for testing or TieredCache API compatibility)
+  - [`pkg/store/valkey`](pkg/store/valkey) - Valkey/Redis
 - **Per-item TTL** - Optional expiration
 - **Thundering herd prevention** - `GetSet` deduplicates concurrent loads for the same key
 - **Graceful degradation** - Cache works even if persistence fails
 - **Zero allocation updates** - minimal GC thrashing
-- 
+
 ## Usage
 
 As a stupid-fast in-memory cache:
@@ -44,7 +45,7 @@ Or as a multi-tier cache with local persistence to survive restarts:
 ```go
 import (
   "github.com/codeGROOVE-dev/sfcache"
-  "github.com/codeGROOVE-dev/sfcache/pkg/persist/localfs"
+  "github.com/codeGROOVE-dev/sfcache/pkg/store/localfs"
 )
 
 p, _ := localfs.New[string, User]("myapp", "")
@@ -57,7 +58,7 @@ cache.Store.Len(ctx)                  // Access persistence layer directly
 How about a persistent cache suitable for Cloud Run or local development? This uses Cloud DataStore if available, local files if not:
 
 ```go
-import "github.com/codeGROOVE-dev/sfcache/pkg/persist/cloudrun"
+import "github.com/codeGROOVE-dev/sfcache/pkg/store/cloudrun"
 
 p, _ := cloudrun.New[string, User](ctx, "myapp")
 cache, _ := sfcache.NewTiered(p)
@@ -163,7 +164,7 @@ Want even more comprehensive benchmarks? See https://github.com/tstromberg/gocac
 
 sfcache implements the core S3-FIFO algorithm (Small/Main/Ghost queues with frequency-based promotion) with these optimizations:
 
-1. **Dynamic Sharding** - 1-256 independent S3-FIFO shards (vs single-threaded) for concurrent workloads
+1. **Dynamic Sharding** - 1-2048 independent S3-FIFO shards (vs single-threaded) for concurrent workloads
 2. **Bloom Filter Ghosts** - Two rotating Bloom filters track evicted keys (vs storing actual keys), reducing memory 10-100x
 3. **Lazy Ghost Checks** - Only check ghosts when evicting, saving 5-9% latency when cache isn't full
 4. **Intrusive Lists** - Embed pointers in entries (vs separate nodes) for zero-allocation queue ops
