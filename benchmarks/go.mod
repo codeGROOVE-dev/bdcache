@@ -3,7 +3,7 @@ module github.com/codeGROOVE-dev/sfcache/benchmarks
 go 1.25.4
 
 require (
-	github.com/codeGROOVE-dev/sfcache v1.3.0
+	github.com/codeGROOVE-dev/sfcache v1.4.0
 	github.com/coocood/freecache v1.2.4
 	github.com/dgraph-io/ristretto v0.2.0
 	github.com/hashicorp/golang-lru/v2 v2.0.7
