@@ -1,4 +1,4 @@
 github.com/codeGROOVE-dev/ds9 v0.8.0 h1:A23VvL1YzUBZyXNYmF5u0R6nPcxQitPeLo8FFk6OiUs=
 github.com/codeGROOVE-dev/ds9 v0.8.0/go.mod h1:0UDipxF1DADfqM5GtjefgB2u+EXdDgOKmxVvrSGLHoM=
-github.com/klauspost/compress v1.18.0 h1:c/Cqfb0r+Yi+JtIEq73FWXVkRonBlf0CRNYc8Zttxdo=
-github.com/klauspost/compress v1.18.0/go.mod h1:2Pp+KzxcywXVXMr50+X0Q/Lsb43OQHYWRCY2AiWywWQ=
+github.com/klauspost/compress v1.18.2 h1:iiPHWW0YrcFgpBYhsA6D1+fqHssJscY/Tm/y2Uqnapk=
+github.com/klauspost/compress v1.18.2/go.mod h1:R0h/fSBs8DE4ENlcrlib3PsXS61voFxhIs2DeRhCvJ4=
