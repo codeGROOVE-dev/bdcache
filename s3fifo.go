@@ -83,6 +83,11 @@ type s3fifo[K comparable, V any] struct {
 	keyIsInt    bool   // Fast path flag for int keys
 	keyIsInt64  bool   // Fast path flag for int64 keys
 	keyIsString bool   // Fast path flag for string keys
+
+	// Global capacity tracking ensures exactly Size() entries can be stored,
+	// regardless of hash distribution across shards.
+	totalEntries atomic.Int64
+	capacity     int
 }
 
 // shard is an independent S3-FIFO cache partition.
@@ -120,6 +125,9 @@ type shard[K comparable, V any] struct {
 	ghostHits             uint32
 	adaptiveRecency       bool   // current mode (true=pure recency)
 	adaptiveMinInsertions uint32 // min insertions before adaptive kicks in
+
+	// Parent pointer for global capacity tracking
+	parent *s3fifo[K, V]
 }
 
 // entryList is an intrusive doubly-linked list for cache entries.
@@ -204,6 +212,7 @@ func newS3FIFO[K comparable, V any](cfg *config) *s3fifo[K, V] {
 		numShards: nshards,
 		//nolint:gosec // G115: nshards bounded by [1, maxShards]
 		shardMask: uint64(nshards - 1),
+		capacity:  capacity,
 	}
 
 	// Detect key type at construction time to enable fast-path hash functions.
@@ -278,6 +287,7 @@ func newS3FIFO[K comparable, V any](cfg *config) *s3fifo[K, V] {
 			ghostAging:            newBloomFilter(ghostCap, 0.00001),
 			hasher:                hasher,
 			adaptiveMinInsertions: uint32(max(shardCap, 256)), //nolint:gosec // G115: shardCap bounded by capacity/nshards
+			parent:                cache,
 		}
 	}
 
@@ -296,15 +306,16 @@ func (s *shard[K, V]) newEntry() *entry[K, V] {
 }
 
 func (s *shard[K, V]) putEntry(e *entry[K, V]) {
-	var zeroK K
-	var zeroV V
+	var (
+		zeroK K
+		zeroV V
+	)
 	e.key = zeroK
 	e.value = zeroV
 	e.expiryNano = 0
 	e.freq.Store(0)
 	e.inSmall = false
 	e.prev = nil
-
 	e.next = s.freeEntries
 	s.freeEntries = e
 }
@@ -458,11 +469,15 @@ func (s *shard[K, V]) set(key K, value V, expiryNano int64) {
 	ent.value = value
 	ent.expiryNano = expiryNano
 
+	// Check if cache is at capacity
+	atCapacity := s.parent.totalEntries.Load() >= int64(s.parent.capacity)
+
 	// Warmup Bypass: During warmup, admit everything to small queue without eviction
-	if !s.warmupComplete && s.small.len+s.main.len < s.capacity {
+	if !s.warmupComplete && !atCapacity {
 		ent.inSmall = true
 		s.small.pushBack(ent)
 		s.entries[key] = ent
+		s.incrementGlobal()
 		s.mu.Unlock()
 		return
 	}
@@ -471,7 +486,7 @@ func (s *shard[K, V]) set(key K, value V, expiryNano int64) {
 
 	// Lazily check ghost only if at capacity (when eviction matters)
 	// This saves 2× bloom filter checks + hash computation when cache isn't full
-	if s.small.len+s.main.len >= s.capacity {
+	if atCapacity {
 		// Track insertions for adaptive ghost rate detection
 		s.insertions++
 
@@ -497,13 +512,11 @@ func (s *shard[K, V]) set(key K, value V, expiryNano int64) {
 			ent.freq.Store(1)
 		}
 
-		// Evict to make room
-		for s.small.len+s.main.len >= s.capacity {
-			if s.small.len > s.capacity/10 {
-				s.evictFromSmall()
-			} else {
-				s.evictFromMain()
-			}
+		// Evict one entry to make room
+		if s.main.len > 0 && s.small.len <= s.capacity/10 {
+			s.evictFromMain()
+		} else if s.small.len > 0 {
+			s.evictFromSmall()
 		}
 	} else {
 		// Cache not full, always insert to small queue
@@ -518,7 +531,18 @@ func (s *shard[K, V]) set(key K, value V, expiryNano int64) {
 	}
 
 	s.entries[key] = ent
+	s.incrementGlobal()
 	s.mu.Unlock()
+}
+
+// incrementGlobal increments the global entry counter.
+func (s *shard[K, V]) incrementGlobal() {
+	s.parent.totalEntries.Add(1)
+}
+
+// decrementGlobal decrements the global entry counter.
+func (s *shard[K, V]) decrementGlobal() {
+	s.parent.totalEntries.Add(-1)
 }
 
 // del removes a value from the cache.
@@ -543,6 +567,7 @@ func (s *shard[K, V]) delete(key K) {
 
 	delete(s.entries, key)
 	s.putEntry(ent)
+	s.decrementGlobal()
 }
 
 // evictFromSmall evicts an entry from the small queue.
@@ -554,26 +579,26 @@ func (s *shard[K, V]) evictFromSmall() {
 	// Determine promotion threshold:
 	// - If adaptive detection found scan-heavy workload, use pure recency (always promote)
 	// - Otherwise, adaptive based on pressure: need freq>1 normally, freq>0 under pressure
-	var promotionThreshold uint32
+	var thresh uint32
 	switch {
 	case s.adaptiveRecency:
-		promotionThreshold = 0 // Always promote (pure recency mode for scan-heavy)
+		thresh = 0 // Always promote (pure recency mode for scan-heavy)
 	case s.small.len > (s.smallCap*4)/5:
-		promotionThreshold = 1 // Under pressure: need freq > 0
+		thresh = 1 // Under pressure: need freq > 0
 	default:
-		promotionThreshold = 2 // Normal: need freq > 1
+		thresh = 2 // Normal: need freq > 1
 	}
 
 	for s.small.len > 0 {
-		ent := s.small.head
-		s.small.remove(ent)
+		e := s.small.head
+		s.small.remove(e)
 
-		if ent.freq.Load() < promotionThreshold {
+		if e.freq.Load() < thresh {
 			// Not accessed enough - evict and track in ghost
-			delete(s.entries, ent.key)
+			delete(s.entries, e.key)
 
 			// Add to ghost queue using two rotating Bloom filters
-			h := s.hasher(ent.key)
+			h := s.hasher(e.key)
 			if !s.ghostActive.Contains(h) {
 				s.ghostActive.Add(h)
 			}
@@ -583,14 +608,15 @@ func (s *shard[K, V]) evictFromSmall() {
 				s.ghostActive, s.ghostAging = s.ghostAging, s.ghostActive
 			}
 
-			s.putEntry(ent)
+			s.putEntry(e)
+			s.decrementGlobal()
 			return
 		}
 
 		// Accessed enough - promote to Main queue
-		ent.freq.Store(0) // Reset frequency: entry must prove itself in Main
-		ent.inSmall = false
-		s.main.pushBack(ent)
+		e.freq.Store(0) // Reset frequency: entry must prove itself in Main
+		e.inSmall = false
+		s.main.pushBack(e)
 
 		// Cascade eviction if main queue exceeds capacity
 		if s.main.len > mainCap {
@@ -603,21 +629,22 @@ func (s *shard[K, V]) evictFromSmall() {
 // Per S3-FIFO paper: evicted items from Main are NOT added to ghost queue.
 func (s *shard[K, V]) evictFromMain() {
 	for s.main.len > 0 {
-		ent := s.main.head
-		s.main.remove(ent)
+		e := s.main.head
+		s.main.remove(e)
 
 		// Check if accessed since last eviction attempt
-		if ent.freq.Load() == 0 {
+		if e.freq.Load() == 0 {
 			// Not accessed - evict (no ghost tracking per S3-FIFO)
-			delete(s.entries, ent.key)
-			s.putEntry(ent)
+			delete(s.entries, e.key)
+			s.putEntry(e)
+			s.decrementGlobal()
 			return
 		}
 
 		// Accessed - give second chance (FIFO-Reinsertion)
 		// Decrement frequency (under lock, so Store is safe)
-		ent.freq.Store(ent.freq.Load() - 1)
-		s.main.pushBack(ent)
+		e.freq.Store(e.freq.Load() - 1)
+		s.main.pushBack(e)
 	}
 }
 
@@ -639,6 +666,8 @@ func (c *s3fifo[K, V]) flush() int {
 	for i := range c.shards {
 		total += c.shards[i].flush()
 	}
+	// Reset global counter
+	c.totalEntries.Store(0)
 	return total
 }
 

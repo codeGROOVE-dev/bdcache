@@ -20,7 +20,7 @@ func main() {
 	valSize := flag.Int("valSize", 1024, "value size")
 	flag.Parse()
 
-	runtime.GC()
+	runtime.GC() //nolint:revive // intentional GC for accurate memory measurement
 	debug.FreeOSMemory()
 
 	cache := sfcache.New[string, []byte](sfcache.Size(*capacity))
@@ -36,9 +36,9 @@ func main() {
 
 	keepAlive = cache
 
-	runtime.GC()
+	runtime.GC() //nolint:revive // intentional GC for accurate memory measurement
 	time.Sleep(100 * time.Millisecond)
-	runtime.GC()
+	runtime.GC() //nolint:revive // intentional GC for accurate memory measurement
 	debug.FreeOSMemory()
 
 	var mem runtime.MemStats

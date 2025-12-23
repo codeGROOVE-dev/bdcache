@@ -616,35 +616,46 @@ func TestMemoryCache_GetSet_IntKeys(t *testing.T) {
 }
 
 func TestMemoryCache_CapacityEfficiency(t *testing.T) {
-	// Test that cache stores a minimum percentage of requested capacity.
-	// Larger caches should have better efficiency since hash distribution
-	// variance is diluted over more entries per shard.
-	tests := []struct {
-		size          int
-		minEfficiency float64 // minimum acceptable efficiency
-	}{
-		{1000, 0.95},   // Small caches: 95% min
-		{16384, 0.97},  // Default size: 97% min
-		{65536, 0.985}, // Large: 98.5% min
-		{131072, 0.99}, // Very large: 99% min
-	}
+	// Test that cache stores exactly the requested capacity.
+	// Global capacity tracking ensures 100% efficiency regardless of
+	// hash distribution across shards.
+	sizes := []int{1000, 16384, 65536}
 
-	for _, tc := range tests {
-		t.Run(fmt.Sprintf("size_%d", tc.size), func(t *testing.T) {
-			cache := New[int, int](Size(tc.size))
+	for _, size := range sizes {
+		t.Run(fmt.Sprintf("size_%d", size), func(t *testing.T) {
+			cache := New[int, int](Size(size))
 			defer cache.Close()
 
 			// Fill to capacity
-			for i := range tc.size {
+			for i := range size {
 				cache.Set(i, i)
 			}
 
 			stored := cache.Len()
-			efficiency := float64(stored) / float64(tc.size)
+			if stored != size {
+				t.Errorf("stored %d entries; want exactly %d (100%% efficiency)", stored, size)
+			}
+		})
+	}
+}
 
-			if efficiency < tc.minEfficiency {
-				t.Errorf("capacity efficiency = %.1f%%; want >= %.1f%% (stored %d of %d)",
-					efficiency*100, tc.minEfficiency*100, stored, tc.size)
+func TestMemoryCache_CapacityEfficiency_StringKeys(t *testing.T) {
+	// String keys have different hash distribution - verify 100% efficiency.
+	sizes := []int{1000, 16384}
+
+	for _, size := range sizes {
+		t.Run(fmt.Sprintf("size_%d", size), func(t *testing.T) {
+			cache := New[string, int](Size(size))
+			defer cache.Close()
+
+			// Fill to capacity with string keys
+			for i := range size {
+				cache.Set(fmt.Sprintf("user:%d:profile", i), i)
+			}
+
+			stored := cache.Len()
+			if stored != size {
+				t.Errorf("stored %d entries; want exactly %d (100%% efficiency)", stored, size)
 			}
 		})
 	}
