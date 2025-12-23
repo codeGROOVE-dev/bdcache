@@ -3,7 +3,7 @@ module github.com/codeGROOVE-dev/multicache/pkg/store/valkey
 go 1.25.4
 
 require (
-	github.com/codeGROOVE-dev/multicache/pkg/store/compress v1.5.0
+	github.com/codeGROOVE-dev/multicache/pkg/store/compress v1.6.0
 	github.com/valkey-io/valkey-go v1.0.69
 )
 

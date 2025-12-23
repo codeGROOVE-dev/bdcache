@@ -3,7 +3,7 @@ module github.com/codeGROOVE-dev/multicache/pkg/store/localfs
 go 1.25.4
 
 require (
-	github.com/codeGROOVE-dev/multicache/pkg/store/compress v1.5.0
+	github.com/codeGROOVE-dev/multicache/pkg/store/compress v1.6.0
 	github.com/klauspost/compress v1.18.2
 	github.com/pierrec/lz4/v4 v4.1.22
 )

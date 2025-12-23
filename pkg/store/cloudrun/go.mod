@@ -3,9 +3,9 @@ module github.com/codeGROOVE-dev/multicache/pkg/store/cloudrun
 go 1.25.4
 
 require (
-	github.com/codeGROOVE-dev/multicache/pkg/store/compress v1.5.0
-	github.com/codeGROOVE-dev/multicache/pkg/store/datastore v1.5.0
-	github.com/codeGROOVE-dev/multicache/pkg/store/localfs v1.5.0
+	github.com/codeGROOVE-dev/multicache/pkg/store/compress v1.6.0
+	github.com/codeGROOVE-dev/multicache/pkg/store/datastore v1.6.0
+	github.com/codeGROOVE-dev/multicache/pkg/store/localfs v1.6.0
 )
 
 require (

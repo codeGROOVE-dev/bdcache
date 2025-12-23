@@ -1,4 +1,2 @@
-github.com/codeGROOVE-dev/multicache/pkg/store/compress v1.5.0 h1:1Ij9M5Ka5NQ5qt/+Khks9haqJAUCSB1IIJY3I+W/k9s=
-github.com/codeGROOVE-dev/multicache/pkg/store/compress v1.5.0/go.mod h1:pc2iuMMvNoQye7Mn71CBgoi6JhbN9WwwAyOhvf1E1iE=
 github.com/klauspost/compress v1.18.2 h1:iiPHWW0YrcFgpBYhsA6D1+fqHssJscY/Tm/y2Uqnapk=
 github.com/klauspost/compress v1.18.2/go.mod h1:R0h/fSBs8DE4ENlcrlib3PsXS61voFxhIs2DeRhCvJ4=
