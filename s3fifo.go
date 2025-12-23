@@ -3,12 +3,16 @@ package sfcache
 import (
 	"fmt"
 	"math/bits"
+	"os"
 	"runtime"
 	"sync"
 	"sync/atomic"
 	"time"
 	"unsafe"
 )
+
+// debugAdaptive enables adaptive mode debug output when SFCACHE_DEBUG=1
+var debugAdaptive = os.Getenv("SFCACHE_DEBUG") == "1"
 
 // wyhash constants for fast string hashing.
 const (
@@ -514,17 +518,28 @@ func (s *shard[K, V]) set(key K, value V, expiryNano int64) {
 
 		// Adaptive mode detection: check every 256 insertions after warmup
 		// Mode 0: scan-heavy (ghost rate < 1%) - pure recency, skip ghost
-		// Mode 1: balanced (ghost rate 1-5%) - lenient promotion (freq > 0)
-		// Mode 2: frequency-heavy (ghost rate > 5%) - strict promotion (freq > 1)
+		// Mode 1: balanced (ghost rate 1-5% or >10%) - lenient promotion (freq > 0)
+		// Mode 2: frequency-heavy (ghost rate 5-10%) - strict promotion (freq > 1)
+		//
+		// Insight: High ghost rates (>10%) indicate strong recency patterns
+		// where items return quickly - these benefit from lenient promotion (mode 1)
+		// rather than strict frequency requirements (mode 2).
 		if s.insertions >= s.adaptiveMinInsertions && s.insertions&0xFF == 0 {
 			ghostRate := s.ghostHits * 100 / s.insertions // percentage
+			oldMode := s.adaptiveMode
 			switch {
 			case ghostRate < 1:
 				s.adaptiveMode = 0 // Scan-heavy: use pure recency
 			case ghostRate < 5:
 				s.adaptiveMode = 1 // Balanced: lenient promotion
-			default:
+			case ghostRate <= 10:
 				s.adaptiveMode = 2 // Frequency-heavy: strict promotion
+			default:
+				s.adaptiveMode = 1 // High recency: back to lenient (items returning fast)
+			}
+			if debugAdaptive && s.adaptiveMode != oldMode {
+				fmt.Printf("[sfcache] mode %d→%d (ghost=%d%%, cap=%d)\n",
+					oldMode, s.adaptiveMode, ghostRate, s.capacity)
 			}
 			// Reset counters for next period
 			s.insertions = 0
