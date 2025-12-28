@@ -8,7 +8,7 @@ import (
 	"time"
 	"unsafe"
 
-	"github.com/puzpuzpuz/xsync/v3"
+	"github.com/puzpuzpuz/xsync/v4"
 )
 
 // wyhash constants.
@@ -103,15 +103,15 @@ func (r *ghostFreqRing) lookup(h uint64) (uint32, bool) {
 // shard is one partition of the cache. Each has its own lock and queues.
 //
 // Uses xsync.RBMutex (reader-biased, BRAVO algorithm) for write operations and
-// xsync.MapOf (CLHT-based) for lock-free reads.
+// xsync.Map (CLHT-based) for lock-free reads.
 // Benchmarked: +191% string-get, +158% getorset, +412% int-get throughput.
 // See experiment_results.md Phase 23 for details.
 //
 //nolint:govet // fieldalignment: padding prevents false sharing
 type shard[K comparable, V any] struct {
-	mu      *xsync.RBMutex                // reader-biased mutex for write operations
-	_       [32]byte                      // pad to cache line
-	entries *xsync.MapOf[K, *entry[K, V]] // lock-free concurrent map
+	mu      *xsync.RBMutex              // reader-biased mutex for write operations
+	_       [32]byte                    // pad to cache line
+	entries *xsync.Map[K, *entry[K, V]] // lock-free concurrent map
 	small   entryList[K, V]
 	main    entryList[K, V]
 
@@ -258,7 +258,7 @@ func newS3FIFO[K comparable, V any](cfg *config) *s3fifo[K, V] {
 	for i := range n {
 		c.shards[i] = &shard[K, V]{
 			mu:          xsync.NewRBMutex(),
-			entries:     xsync.NewMapOf[K, *entry[K, V]](xsync.WithPresize(scap)),
+			entries:     xsync.NewMap[K, *entry[K, V]](xsync.WithPresize(scap)),
 			capacity:    scap,
 			smallThresh: scap * 247 / 1000, // 24.7% tuned via sweep
 			ghostCap:    scap,
