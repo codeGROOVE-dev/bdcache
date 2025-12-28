@@ -699,8 +699,7 @@ func TestS3FIFO_FrequencyCapAt7(t *testing.T) {
 	}
 
 	// Access the internal entry to check frequency
-	shard := cache.shard("hot")
-	ent, ok := shard.getEntry("hot")
+	ent, ok := cache.getEntry("hot")
 
 	if !ok {
 		t.Fatal("entry not found")
@@ -724,8 +723,7 @@ func TestS3FIFO_SetIncrementsFrequency(t *testing.T) {
 	cache.set("key", 1, 0)
 
 	// Check initial frequency (should be 0 for new entries)
-	shard := cache.shard("key")
-	ent, _ := shard.getEntry("key")
+	ent, _ := cache.getEntry("key")
 	initialFreq := ent.freq.Load()
 
 	if initialFreq != 0 {
@@ -738,7 +736,7 @@ func TestS3FIFO_SetIncrementsFrequency(t *testing.T) {
 	}
 
 	// Check that frequency increased due to updates
-	ent, _ = shard.getEntry("key")
+	ent, _ = cache.getEntry("key")
 	finalFreq := ent.freq.Load()
 
 	if finalFreq == 0 {
@@ -783,60 +781,15 @@ func TestS3FIFO_CascadingEviction(t *testing.T) {
 	}
 }
 
-// TestS3FIFO_ShardingConstraints tests that shard count satisfies the algorithm constraints:
-// - numShards is a power of 2 for fast modulo
-// - Each shard has at least 64 entries for effective S3-FIFO
-// - numShards <= GOMAXPROCS (prioritizes concurrency)
-// - numShards <= maxShards (2048)
-func TestS3FIFO_ShardingConstraints(t *testing.T) {
-	testCases := []int{100, 1000, 16384, 32768, 65536, 131072, 1000000}
-
-	for _, capacity := range testCases {
-		t.Run(fmt.Sprintf("capacity_%d", capacity), func(t *testing.T) {
-			cache := newS3FIFO[int, int](&config{size: capacity})
-
-			// Must be power of 2
-			if cache.numShards&(cache.numShards-1) != 0 {
-				t.Errorf("capacity %d: numShards %d is not a power of 2",
-					capacity, cache.numShards)
-			}
-
-			// Each shard should have at least 16 entries (or 1 shard for tiny caches)
-			entriesPerShard := capacity / cache.numShards
-			if entriesPerShard < 16 && cache.numShards > 1 {
-				t.Errorf("capacity %d: only %d entries per shard (min 16)",
-					capacity, entriesPerShard)
-			}
-
-			// Should not exceed maxShards
-			if cache.numShards > maxShards {
-				t.Errorf("capacity %d: numShards %d exceeds maxShards %d",
-					capacity, cache.numShards, maxShards)
-			}
-		})
-	}
-}
-
 // TestS3FIFO_GhostQueueSize tests that ghost queue is sized at 100% of cache capacity.
 // This matches the reference s3-fifo implementation.
 func TestS3FIFO_GhostQueueSize(t *testing.T) {
 	capacity := 1000
 	cache := newS3FIFO[int, int](&config{size: capacity})
 
-	// Check each shard's ghost queue capacity
-	totalGhostCap := 0
-	for _, shard := range cache.shards {
-		totalGhostCap += shard.ghostCap
-	}
-
-	// Ghost capacity should be approximately equal to cache capacity
-	// Allow some variance due to shard rounding
-	minExpected := capacity * 90 / 100
-	maxExpected := capacity * 110 / 100
-
-	if totalGhostCap < minExpected || totalGhostCap > maxExpected {
-		t.Errorf("total ghost capacity = %d; want ~%d (90-110%% of capacity)",
-			totalGhostCap, capacity)
+	// Ghost capacity should equal cache capacity
+	if cache.ghostCap != capacity {
+		t.Errorf("ghost capacity = %d; want %d", cache.ghostCap, capacity)
 	}
 }
 
@@ -889,8 +842,7 @@ func TestS3FIFO_GhostQueuePromotion(t *testing.T) {
 	cache.set(0, 9999, 0)
 
 	// Check that key 0 is in main queue by inspecting internal state
-	shard := cache.shard(0)
-	ent, ok := shard.getEntry(0)
+	ent, ok := cache.getEntry(0)
 	inSmall := false
 	if ok {
 		inSmall = ent.inSmall
