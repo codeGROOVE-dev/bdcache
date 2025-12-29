@@ -82,11 +82,12 @@ multicache uses [S3-FIFO](https://s3fifo.com/), which features three queues: sma
 multicache has been hyper-tuned for high performance, and deviates from the original paper in a handful of ways:
 
 - **Dynamic sharding** - scales to 16×GOMAXPROCS shards; at 32 threads: 21x Get throughput, 6x Set throughput vs single shard
-- **Tuned small queue** - 24.7% vs paper's 10%, chosen via sweep in 0.1% increments to maximize wins across 9 production traces
-- **Full ghost frequency restoration** - returning keys restore 100% of their previous access count; +0.37% zipf, +0.05% meta, +0.04% tencentPhoto, +0.03% wikipedia
-- **Extended frequency cap** - max freq=7 vs paper's 3; +0.9% meta, +0.8% zipf
-- **Hot item demotion** - items that were once hot (freq≥4) get demoted to small queue instead of evicted; +0.24% zipf
-- **Death row buffer** - 8-entry buffer per shard holds recently evicted items for instant resurrection; +0.04% meta/tencentPhoto, +0.03% wikipedia, +8% set throughput
+- **Tuned small queue** - 90% vs paper's 10%, tuned via binary search to maximize average hit rate across 9 production traces
+- **Full ghost frequency restoration** - returning keys restore 100% of their previous access count
+- **Reduced frequency cap** - max freq=2 vs paper's 3, tuned via binary search for best average hit rate
+- **Hot item demotion** - items accessed at least once (peakFreq≥1) get demoted to small queue instead of evicted
+- **Extended ghost capacity** - 8x cache size for ghost tracking, tuned via binary search
+- **Death row buffer** - capacity/768 buffer holds recently evicted items for instant resurrection
 - **Ghost frequency ring buffer** - fixed-size 256-entry ring replaces map allocations; -5.1% string latency, -44.5% memory
 
 ## License

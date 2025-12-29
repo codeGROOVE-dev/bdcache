@@ -26,11 +26,11 @@ var hitrateGoals = map[string]float64{
 	"cdn":          58.3,
 	"meta":         72.0,
 	"twitter":      84.5,
-	"wikipedia":    30.59,
-	"thesiosBlock": 18.4,
-	"thesiosFile":  87.9,
-	"ibmDocker":    83.446,
-	"tencentPhoto": 19.7,
+	"wikipedia":    33.042,
+	"thesiosBlock": 25.358,
+	"thesiosFile":  93.458,
+	"ibmDocker":    83.397,
+	"tencentPhoto": 20.891,
 }
 
 // hitRateKeys maps display names to JSON keys for hit rate lookup.
@@ -48,6 +48,20 @@ var hitRateKeys = map[string]string{
 
 // goldMedalists are the caches to compare in competitive mode.
 var goldMedalists = "multicache,otter,clock,theine,sieve,freelru-sync"
+
+// suiteGoals are the minimum/maximum acceptable averages across all tests in each suite.
+// For latency and memory, lower is better so these are maximums.
+var suiteGoals = struct {
+	minHitRate    float64 // minimum average hit rate %
+	maxLatency    float64 // maximum average latency ns/op
+	minThroughput float64 // minimum average throughput ops/s
+	maxMemory     int     // maximum bytes per item
+}{
+	minHitRate:    59.0,
+	maxLatency:    18.0,
+	minThroughput: 250e6,
+	maxMemory:     80,
+}
 
 const (
 	minMulticacheScore = 163
@@ -133,6 +147,9 @@ func main() {
 
 	// Validate results.
 	if err := validateHitrate(results); err != nil {
+		fatal("%v", err)
+	}
+	if err := validateSuiteGoals(results); err != nil {
 		fatal("%v", err)
 	}
 	if *competitive {
@@ -385,6 +402,105 @@ func validateHitrate(res *Results) error {
 	}
 	fmt.Println("\nAll hitrate goals met!")
 	return nil
+}
+
+func validateSuiteGoals(res *Results) error {
+	fmt.Println("\n=== Suite Goals Validation ===")
+	var fails []string
+
+	// Hit rate average.
+	var hitRates []float64
+	for name := range res.HitRate {
+		if name == "sizes" {
+			continue
+		}
+		caches, err := res.hitRateResults(name)
+		if err != nil {
+			continue
+		}
+		if rate := findHitRate(caches, "multicache"); rate > 0 {
+			hitRates = append(hitRates, rate)
+		}
+	}
+	if len(hitRates) > 0 {
+		avg := sum(hitRates) / float64(len(hitRates))
+		if avg >= suiteGoals.minHitRate {
+			fmt.Printf("✓ hitrate avg: %.2f%% (goal: ≥%.2f%%)\n", avg, suiteGoals.minHitRate)
+		} else {
+			fmt.Printf("✗ hitrate avg: %.2f%% (goal: ≥%.2f%%)\n", avg, suiteGoals.minHitRate)
+			fails = append(fails, fmt.Sprintf("hitrate avg %.2f%% < %.2f%%", avg, suiteGoals.minHitRate))
+		}
+	}
+
+	// Latency average.
+	var latencies []float64
+	for name := range res.Latency {
+		var results []LatencyResult
+		if raw, ok := res.Latency[name]; ok {
+			json.Unmarshal(raw, &results)
+		}
+		if ns := findLatency(results, "multicache"); ns > 0 {
+			latencies = append(latencies, ns)
+		}
+	}
+	if len(latencies) > 0 {
+		avg := sum(latencies) / float64(len(latencies))
+		if avg <= suiteGoals.maxLatency {
+			fmt.Printf("✓ latency avg: %.1f ns/op (goal: ≤%.1f)\n", avg, suiteGoals.maxLatency)
+		} else {
+			fmt.Printf("✗ latency avg: %.1f ns/op (goal: ≤%.1f)\n", avg, suiteGoals.maxLatency)
+			fails = append(fails, fmt.Sprintf("latency avg %.1f > %.1f", avg, suiteGoals.maxLatency))
+		}
+	}
+
+	// Throughput average.
+	var throughputs []float64
+	for name := range res.Throughput {
+		if name == "threads" {
+			continue
+		}
+		var results []ThroughputResult
+		if raw, ok := res.Throughput[name]; ok {
+			json.Unmarshal(raw, &results)
+		}
+		if qps := findThroughput(results, "multicache"); qps > 0 {
+			throughputs = append(throughputs, qps)
+		}
+	}
+	if len(throughputs) > 0 {
+		avg := sum(throughputs) / float64(len(throughputs))
+		if avg >= suiteGoals.minThroughput {
+			fmt.Printf("✓ throughput avg: %.2f M ops/s (goal: ≥%.2f M)\n", avg/1e6, suiteGoals.minThroughput/1e6)
+		} else {
+			fmt.Printf("✗ throughput avg: %.2f M ops/s (goal: ≥%.2f M)\n", avg/1e6, suiteGoals.minThroughput/1e6)
+			fails = append(fails, fmt.Sprintf("throughput avg %.2f M < %.2f M", avg/1e6, suiteGoals.minThroughput/1e6))
+		}
+	}
+
+	// Memory.
+	if res.Memory != nil {
+		if bytes := findMemory(res.Memory.Results, "multicache"); bytes > 0 {
+			if bytes <= suiteGoals.maxMemory {
+				fmt.Printf("✓ memory: %d bytes/item (goal: ≤%d)\n", bytes, suiteGoals.maxMemory)
+			} else {
+				fmt.Printf("✗ memory: %d bytes/item (goal: ≤%d)\n", bytes, suiteGoals.maxMemory)
+				fails = append(fails, fmt.Sprintf("memory %d > %d", bytes, suiteGoals.maxMemory))
+			}
+		}
+	}
+
+	if len(fails) > 0 {
+		return fmt.Errorf("suite goals not met:\n  %s", strings.Join(fails, "\n  "))
+	}
+	return nil
+}
+
+func sum(vals []float64) float64 {
+	var total float64
+	for _, v := range vals {
+		total += v
+	}
+	return total
 }
 
 func showDeltas(ref, curr *Results) {

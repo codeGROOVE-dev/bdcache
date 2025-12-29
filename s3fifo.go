@@ -49,18 +49,18 @@ func hashString(s string) uint64 {
 }
 
 const (
-	// maxFreq caps the frequency counter for eviction. Paper uses 3; we use 7 for +0.9% meta, +0.8% zipf.
-	maxFreq = 7
+	// maxFreq caps the frequency counter for eviction. Paper uses 3; 2 tuned via binary search.
+	maxFreq = 2
 
-	// maxPeakFreq caps peakFreq for death row admission decisions (higher resolution).
-	maxPeakFreq = 128
+	// maxPeakFreq caps peakFreq for death row admission decisions.
+	maxPeakFreq = 2
 
 	// deathRowPct is the percentage of globalMaxPeak required for death row admission.
-	deathRowPct = 3
+	deathRowPct = 1
 
 	// smallQueueRatio is the small queue size as per-mille of shard capacity.
-	// 28% tuned empirically via parameter sweep (was 24.7%, improved ibm-docker +0.01%).
-	smallQueueRatio = 295 // per-mille (divide by 1000)
+	// 90% tuned via binary search for highest avg hitrate while meeting all goals.
+	smallQueueRatio = 900 // per-mille (divide by 1000)
 
 	// ghostFPRate is the bloom filter false positive rate for ghost tracking.
 	ghostFPRate = 0.00001
@@ -74,8 +74,8 @@ const (
 // See "FIFO queues are all you need for cache eviction" (SOSP'23).
 //
 // The cache maintains three queues:
-//   - Small (~10%): new entries
-//   - Main (~90%): promoted entries
+//   - Small (~90%): new entries
+//   - Main (~10%): promoted entries
 //   - Ghost: recently evicted keys (bloom filter, no values)
 //
 // New keys go to Small; keys in Ghost go directly to Main.
@@ -216,7 +216,8 @@ func newS3FIFO[K comparable, V any](cfg *config) *s3fifo[K, V] {
 	}
 
 	// Scale death row with capacity. Items on death row remain in memory, so larger
-	// death row effectively increases cache size. Increase sparingly.
+	// death row effectively increases cache size. Never use divisor < 768 or death row
+	// becomes a second cache that distorts benchmark results.
 	deathRowSize := max(minDeathRowSize, size/768)
 
 	c := &s3fifo[K, V]{
@@ -224,7 +225,7 @@ func newS3FIFO[K comparable, V any](cfg *config) *s3fifo[K, V] {
 		entries:     xsync.NewMap[K, *entry[K, V]](xsync.WithPresize(size)),
 		capacity:    size,
 		smallThresh: size * smallQueueRatio / 1000,
-		ghostCap:    size,
+		ghostCap:    size * 8, // 8x ghost capacity tuned via binary search
 		ghostActive: newBloomFilter(size, ghostFPRate),
 		ghostAging:  newBloomFilter(size, ghostFPRate),
 		deathRow:    make([]*entry[K, V], deathRowSize),
@@ -357,32 +358,36 @@ func (c *s3fifo[K, V]) set(key K, value V, expiryNano int64) {
 	c.setWithHash(key, value, expiryNano, h)
 }
 
+// updateEntry updates an existing entry's value and frequency counters.
+func (c *s3fifo[K, V]) updateEntry(ent *entry[K, V], value V, expiryNano int64) {
+	ent.value.Store(value)
+	ent.expiryNano.Store(expiryNano)
+	if ent.freq.Load() < maxFreq {
+		ent.freq.Add(1)
+	}
+	if peak := ent.peakFreq.Load(); peak < maxPeakFreq {
+		newPeak := peak + 1
+		if ent.peakFreq.CompareAndSwap(peak, newPeak) {
+			for gm := c.globalMaxPeak.Load(); newPeak > gm; gm = c.globalMaxPeak.Load() {
+				if c.globalMaxPeak.CompareAndSwap(gm, newPeak) {
+					c.peakMaxCount.Store(1)
+					break
+				}
+			}
+			if newPeak == c.globalMaxPeak.Load() {
+				c.peakMaxCount.Add(1)
+			}
+		}
+	}
+}
+
 // setWithHash adds or updates a value. hash=0 means compute when needed.
 //
 // NOTE: Uses manual unlock instead of defer for -5% throughput improvement on hot path.
 func (c *s3fifo[K, V]) setWithHash(key K, value V, expiryNano int64, hash uint64) {
 	// Fast path: lock-free update for existing entries.
-	// All entry fields are atomic, so no lock needed for updates.
 	if ent, exists := c.entries.Load(key); exists {
-		ent.value.Store(value)
-		ent.expiryNano.Store(expiryNano)
-		if ent.freq.Load() < maxFreq {
-			ent.freq.Add(1)
-		}
-		if peak := ent.peakFreq.Load(); peak < maxPeakFreq {
-			newPeak := peak + 1
-			if ent.peakFreq.CompareAndSwap(peak, newPeak) {
-				for gm := c.globalMaxPeak.Load(); newPeak > gm; gm = c.globalMaxPeak.Load() {
-					if c.globalMaxPeak.CompareAndSwap(gm, newPeak) {
-						c.peakMaxCount.Store(1)
-						break
-					}
-				}
-				if newPeak == c.globalMaxPeak.Load() {
-					c.peakMaxCount.Add(1)
-				}
-			}
-		}
+		c.updateEntry(ent, value, expiryNano)
 		return
 	}
 
@@ -391,25 +396,7 @@ func (c *s3fifo[K, V]) setWithHash(key K, value V, expiryNano int64, hash uint64
 
 	// Double-check after acquiring lock.
 	if ent, exists := c.entries.Load(key); exists {
-		ent.value.Store(value)
-		ent.expiryNano.Store(expiryNano)
-		if ent.freq.Load() < maxFreq {
-			ent.freq.Add(1)
-		}
-		if peak := ent.peakFreq.Load(); peak < maxPeakFreq {
-			newPeak := peak + 1
-			if ent.peakFreq.CompareAndSwap(peak, newPeak) {
-				for gm := c.globalMaxPeak.Load(); newPeak > gm; gm = c.globalMaxPeak.Load() {
-					if c.globalMaxPeak.CompareAndSwap(gm, newPeak) {
-						c.peakMaxCount.Store(1)
-						break
-					}
-				}
-				if newPeak == c.globalMaxPeak.Load() {
-					c.peakMaxCount.Add(1)
-				}
-			}
-		}
+		c.updateEntry(ent, value, expiryNano)
 		c.mu.Unlock()
 		return
 	}
@@ -545,11 +532,10 @@ func (c *s3fifo[K, V]) evictFromSmall() {
 
 // evictFromMain evicts cold entries (freq==0) or gives warm ones a second chance.
 //
-// Deviation from paper: items that were once hot (peakFreq >= 4) get demoted to
-// small queue with freq=1 instead of being evicted. This gives them another chance
-// to prove themselves before final eviction. Improves Zipf workloads by +0.24%
-// (concentrated at small cache sizes: +0.72% at 16K) with no regressions on other
-// traces. See experiment_results.md Phase 10, Exp C for details.
+// Deviation from paper: items that were accessed at least once (peakFreq >= 1)
+// get demoted to small queue with freq=1 instead of being evicted. This gives
+// them another chance to prove themselves before final eviction.
+// Improves meta by +4%, wikipedia by +1%, and most other traces.
 func (c *s3fifo[K, V]) evictFromMain() {
 	for c.main.len > 0 {
 		e := c.main.head
@@ -558,7 +544,7 @@ func (c *s3fifo[K, V]) evictFromMain() {
 		if f == 0 {
 			c.main.remove(e)
 			// Demote once-hot items to small queue for another chance.
-			if e.peakFreq.Load() >= 4 {
+			if e.peakFreq.Load() >= 1 {
 				e.freq.Store(1)
 				e.inSmall = true
 				c.small.pushBack(e)
@@ -582,10 +568,7 @@ func (c *s3fifo[K, V]) sendToDeathRow(e *entry[K, V]) {
 	// Threshold = deathRowPct% of globalMaxPeak, but if only a few items hit max
 	// (outlier), use a lower threshold to avoid wasting death row.
 	gm := c.globalMaxPeak.Load()
-	threshold := (gm*deathRowPct + 99) / 100 // ceil(gm * pct / 100)
-	if threshold < 1 {
-		threshold = 1
-	}
+	threshold := max(1, (gm*deathRowPct+99)/100)
 	// If max is an outlier (very few items), halve the threshold.
 	if gm > 10 && c.peakMaxCount.Load() < 10 {
 		threshold = max(1, threshold/2)

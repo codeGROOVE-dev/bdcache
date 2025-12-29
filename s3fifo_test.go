@@ -781,15 +781,14 @@ func TestS3FIFO_CascadingEviction(t *testing.T) {
 	}
 }
 
-// TestS3FIFO_GhostQueueSize tests that ghost queue is sized at 100% of cache capacity.
-// This matches the reference s3-fifo implementation.
+// TestS3FIFO_GhostQueueSize tests that ghost queue is sized correctly.
 func TestS3FIFO_GhostQueueSize(t *testing.T) {
 	capacity := 1000
 	cache := newS3FIFO[int, int](&config{size: capacity})
 
-	// Ghost capacity should equal cache capacity
-	if cache.ghostCap != capacity {
-		t.Errorf("ghost capacity = %d; want %d", cache.ghostCap, capacity)
+	// Ghost capacity should be 8x cache capacity (tuned via binary search)
+	if cache.ghostCap != capacity*8 {
+		t.Errorf("ghost capacity = %d; want %d", cache.ghostCap, capacity*8)
 	}
 }
 
