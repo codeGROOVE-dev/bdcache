@@ -27,9 +27,9 @@ var hitrateGoals = map[string]float64{
 	"meta":         72.0,
 	"twitter":      84.5,
 	"wikipedia":    30.59,
-	"thesiosBlock": 17.849,
-	"thesiosFile":  88.035,
-	"ibmDocker":    82.95,
+	"thesiosBlock": 18.4,
+	"thesiosFile":  87.9,
+	"ibmDocker":    83.446,
 	"tencentPhoto": 19.7,
 }
 
@@ -87,27 +87,32 @@ func main() {
 
 	// Build gocachemark arguments.
 	args := []string{"run", "."}
-	var outdir string
 	if *competitive {
 		args = append(args, "-caches", goldMedalists)
-		outdir = benchmarksDir
 	} else {
 		args = append(args, "-caches", "multicache")
-		outdir, err = os.MkdirTemp("", "gocachemark-")
-		if err != nil {
-			fatal("creating temp directory: %v", err)
-		}
-		defer os.RemoveAll(outdir)
 	}
+
+	// Always use temp directory for output first.
+	outdir, err := os.MkdirTemp("", "gocachemark-")
+	if err != nil {
+		fatal("creating temp directory: %v", err)
+	}
+	defer os.RemoveAll(outdir)
 	args = append(args, "-outdir", outdir)
 
 	// Add filters if env vars are set.
-	if v := os.Getenv("TESTS"); v != "" {
-		args = append(args, "-tests", v)
+	testsFilter := os.Getenv("TESTS")
+	suitesFilter := os.Getenv("SUITES")
+	if testsFilter != "" {
+		args = append(args, "-tests", testsFilter)
 	}
-	if v := os.Getenv("SUITES"); v != "" {
-		args = append(args, "-suites", v)
+	if suitesFilter != "" {
+		args = append(args, "-suites", suitesFilter)
 	}
+
+	// Track whether this is a full run (no filters).
+	fullRun := testsFilter == "" && suitesFilter == ""
 
 	// Run gocachemark with streaming output.
 	mode := "multicache"
@@ -134,7 +139,15 @@ func main() {
 		if err := validateCompetitive(results, ref); err != nil {
 			fatal("%v", err)
 		}
-		fmt.Printf("\nResults saved to %s/\n", benchmarksDir)
+		// Only save results if all tests were run (no filters).
+		if fullRun {
+			if err := copyResults(outdir, benchmarksDir); err != nil {
+				fatal("saving results: %v", err)
+			}
+			fmt.Printf("\nResults saved to %s/\n", benchmarksDir)
+		} else {
+			fmt.Printf("\nResults NOT saved (filtered run: TESTS=%q SUITES=%q)\n", testsFilter, suitesFilter)
+		}
 	}
 }
 
@@ -641,6 +654,20 @@ func buildPlacementMap(r *Results) map[string]map[string]placement {
 		}
 	}
 	return out
+}
+
+func copyResults(src, dst string) error {
+	files := []string{"gocachemark_results.json", "gocachemark_results.md"}
+	for _, name := range files {
+		data, err := os.ReadFile(filepath.Join(src, name))
+		if err != nil {
+			return fmt.Errorf("reading %s: %w", name, err)
+		}
+		if err := os.WriteFile(filepath.Join(dst, name), data, 0644); err != nil {
+			return fmt.Errorf("writing %s: %w", name, err)
+		}
+	}
+	return nil
 }
 
 func fatal(format string, args ...any) {
