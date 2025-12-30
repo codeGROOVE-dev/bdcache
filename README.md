@@ -71,7 +71,7 @@ Where others win:
 - **Memory**: freelru and otter use less memory per entry (73 bytes/item overhead vs 15 for otter)
 - **Specific workloads**: clock +0.07% on ibm-docker, theine +0.34% on zipf
 
-Much of the credit for high throughput goes to [puzpuzpuz/xsync](https://github.com/puzpuzpuz/xsync). While highly sharded maps and flightGroups performed well, you can't beat xsync's lock-free data structures.
+Much of the credit for high throughput goes to [puzpuzpuz/xsync](https://github.com/puzpuzpuz/xsync) and its lock-free data structures.
 
 Run `make benchmark` for full results, or see [benchmarks/gocachemark_results.md](benchmarks/gocachemark_results.md).
 
@@ -81,14 +81,12 @@ multicache uses [S3-FIFO](https://s3fifo.com/), which features three queues: sma
 
 multicache has been hyper-tuned for high performance, and deviates from the original paper in a handful of ways:
 
-- **Dynamic sharding** - scales to 16×GOMAXPROCS shards; at 32 threads: 21x Get throughput, 6x Set throughput vs single shard
 - **Tuned small queue** - 90% vs paper's 10%, tuned via binary search to maximize average hit rate across 9 production traces
 - **Full ghost frequency restoration** - returning keys restore 100% of their previous access count
 - **Reduced frequency cap** - max freq=2 vs paper's 3, tuned via binary search for best average hit rate
 - **Hot item demotion** - items accessed at least once (peakFreq≥1) get demoted to small queue instead of evicted
 - **Extended ghost capacity** - 8x cache size for ghost tracking, tuned via binary search
-- **Death row buffer** - capacity/768 buffer holds recently evicted items for instant resurrection
-- **Ghost frequency ring buffer** - fixed-size 256-entry ring replaces map allocations; -5.1% string latency, -44.5% memory
+- **Ghost frequency ring buffer** - fixed-size 256-entry ring replaces map allocations
 
 ## License
 
