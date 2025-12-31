@@ -856,7 +856,6 @@ func TestCache_GetSet_RaceCondition(t *testing.T) {
 				}
 				return idx * 10, nil
 			})
-
 			if err != nil {
 				t.Errorf("GetSet error: %v", err)
 			}
@@ -926,7 +925,6 @@ func TestCache_GetSet_WithDefaultTTL(t *testing.T) {
 	val, err := cache.GetSet("key1", func() (int, error) {
 		return 42, nil
 	})
-
 	if err != nil {
 		t.Fatalf("GetSet error: %v", err)
 	}

@@ -788,9 +788,10 @@ func TestS3FIFO_GhostQueueSize(t *testing.T) {
 	capacity := 1000
 	cache := newS3FIFO[int, int](&config{size: capacity})
 
-	// Ghost capacity should be 8x cache capacity (tuned via binary search)
-	if cache.ghostCap != capacity*8 {
-		t.Errorf("ghost capacity = %d; want %d", cache.ghostCap, capacity*8)
+	// Ghost capacity should be 0.75x cache capacity (tuned via binary search)
+	want := capacity * ghostCapPerMille / 1000
+	if cache.ghostCap != want {
+		t.Errorf("ghost capacity = %d; want %d", cache.ghostCap, want)
 	}
 }
 

@@ -1742,17 +1742,13 @@ func TestTieredCache_GetSet_SecondCheckMemory(t *testing.T) {
 	// Pre-populate memory directly (but not persistence)
 	cache.memory.set("key1", 77, 0)
 
-	loaderCalls := 0
+	var loaderCalls atomic.Int32
 	loader := func(ctx context.Context) (int, error) {
-		loaderCalls++
+		loaderCalls.Add(1)
 		return 42, nil
 	}
 
-	// First check won't find it (memory is checked at start)
-	// But the double-check inside singleflight should find it
-	// Actually, the first memory check will find it, so loader won't be called
-
-	// Let's test a different scenario - concurrent access
+	// Test concurrent access
 	var wg sync.WaitGroup
 	results := make([]int, 10)
 
@@ -1819,7 +1815,6 @@ func TestTieredCache_GetSet_SecondStoreGetFound(t *testing.T) {
 		loaderCalled = true
 		return 42, nil
 	})
-
 	if err != nil {
 		t.Fatalf("GetSet failed: %v", err)
 	}

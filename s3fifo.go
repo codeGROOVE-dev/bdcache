@@ -49,21 +49,28 @@ func hashString(s string) uint64 {
 }
 
 const (
-	// maxFreq caps the frequency counter for eviction. Paper uses 3; 2 tuned via binary search.
-	maxFreq = 2
+	// maxFreq caps the frequency counter for eviction. Paper uses 3; 5 tuned via binary search.
+	// WARNING: Must be >= 2. Setting to 1 creates infinite loop in eviction (items with
+	// freq=1 get promoted instead of evicted, causing evictFromSmall to never return true).
+	maxFreq = 5
 
 	// maxPeakFreq caps peakFreq for death row admission decisions.
 	maxPeakFreq = 21
 
-	// deathRowPct is the percentage of globalMaxPeak required for death row admission.
-	deathRowPct = 1
-
 	// smallQueueRatio is the small queue size as per-mille of shard capacity.
-	// 90% tuned via binary search for highest avg hitrate while meeting all goals.
-	smallQueueRatio = 900 // per-mille (divide by 1000)
+	// 40% tuned via binary search for highest avg hitrate (60.68% vs 59.40% at 90%).
+	smallQueueRatio = 138 // per-mille - TESTING
 
 	// ghostFPRate is the bloom filter false positive rate for ghost tracking.
 	ghostFPRate = 0.00001
+
+	// ghostCapPerMille is ghost queue capacity as per-mille of cache size.
+	// 0.75x tuned via binary search (61.30% vs 60.68% at 8x).
+	ghostCapPerMille = 750 // per-mille
+
+	// deathRowThresholdPerMille scales the death row admission threshold.
+	// 1000 = average peakFreq. Tuned: 1000-2000 optimal (61.356%).
+	deathRowThresholdPerMille = 1000
 
 	// minDeathRowSize is the minimum death row slots.
 	// Death row size scales with capacity to match pre-sharding behavior.
@@ -225,7 +232,7 @@ func newS3FIFO[K comparable, V any](cfg *config) *s3fifo[K, V] {
 		entries:     xsync.NewMap[K, *entry[K, V]](xsync.WithPresize(size)),
 		capacity:    size,
 		smallThresh: size * smallQueueRatio / 1000,
-		ghostCap:    size * 8, // 8x ghost capacity tuned via binary search
+		ghostCap:    size * ghostCapPerMille / 1000,
 		ghostActive: newBloomFilter(size, ghostFPRate),
 		ghostAging:  newBloomFilter(size, ghostFPRate),
 		deathRow:    make([]*entry[K, V], deathRowSize),
@@ -614,8 +621,11 @@ func (c *s3fifo[K, V]) sampleAvgPeakFreq() uint32 {
 // If death row is full, the oldest pending entry is truly evicted.
 func (c *s3fifo[K, V]) sendToDeathRow(e *entry[K, V]) {
 	// Compute adaptive threshold by sampling current entries.
-	// Only admit entries with above-average frequency to death row.
-	threshold := c.sampleAvgPeakFreq()
+	// Only admit entries with above-threshold frequency to death row.
+	threshold := c.sampleAvgPeakFreq() * deathRowThresholdPerMille / 1000
+	if threshold == 0 {
+		threshold = 1
+	}
 	if e.peakFreq.Load() < threshold {
 		c.entries.Delete(e.key)
 		c.addToGhost(e.hash, e.peakFreq.Load())
