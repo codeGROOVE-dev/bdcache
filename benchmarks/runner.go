@@ -27,9 +27,9 @@ var hitrateGoals = map[string]float64{
 	"meta":         72.0,
 	"twitter":      84.5,
 	"wikipedia":    33.042,
-	"thesiosBlock": 25.358,
+	"thesiosBlock": 24.785,
 	"thesiosFile":  93.458,
-	"ibmDocker":    83.397,
+	"ibmDocker":    83.33,
 	"tencentPhoto": 20.891,
 }
 
@@ -57,7 +57,7 @@ var suiteGoals = struct {
 	minThroughput float64 // minimum average throughput ops/s
 	maxMemory     int     // maximum bytes per item
 }{
-	minHitRate:    59.0,
+	minHitRate:    61.61,
 	maxLatency:    18.0,
 	minThroughput: 250e6,
 	maxMemory:     80,

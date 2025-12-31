@@ -58,18 +58,18 @@ const (
 	maxPeakFreq = 21
 
 	// smallQueueRatio is the small queue size as per-mille of shard capacity.
-	// 40% tuned via binary search for highest avg hitrate (60.68% vs 59.40% at 90%).
-	smallQueueRatio = 138 // per-mille - TESTING
+	// 13.7% tuned via binary search (61.574% vs 59.40% at 90%).
+	smallQueueRatio = 137 // per-mille
 
 	// ghostFPRate is the bloom filter false positive rate for ghost tracking.
 	ghostFPRate = 0.00001
 
 	// ghostCapPerMille is ghost queue capacity as per-mille of cache size.
-	// 0.75x tuned via binary search (61.30% vs 60.68% at 8x).
-	ghostCapPerMille = 750 // per-mille
+	// 1.22x tuned via binary search (61.620% vs 61.574% at 0.75x).
+	ghostCapPerMille = 1220 // per-mille
 
 	// deathRowThresholdPerMille scales the death row admission threshold.
-	// 1000 = average peakFreq. Tuned: 1000-2000 optimal (61.356%).
+	// 1000 = average peakFreq. Wide plateau from 10-1500 (all ~61.62%).
 	deathRowThresholdPerMille = 1000
 
 	// minDeathRowSize is the minimum death row slots.
@@ -81,8 +81,8 @@ const (
 // See "FIFO queues are all you need for cache eviction" (SOSP'23).
 //
 // The cache maintains three queues:
-//   - Small (~90%): new entries
-//   - Main (~10%): promoted entries
+//   - Small (~14%): new entries (filter for one-hit wonders)
+//   - Main (~86%): promoted entries (protected from scans)
 //   - Ghost: recently evicted keys (bloom filter, no values)
 //
 // New keys go to Small; keys in Ghost go directly to Main.
@@ -522,12 +522,12 @@ func (c *s3fifo[K, V]) del(key K) {
 
 // addToGhost records an evicted key for future admission decisions.
 // Uses cached hash from entry to avoid re-hashing.
+// Note: bloom Add is idempotent, so we skip Contains check for speed.
+// Entry count may be slightly inflated but rotation timing is approximate anyway.
 func (c *s3fifo[K, V]) addToGhost(h uint64, peakFreq uint32) {
-	if !c.ghostActive.Contains(h) {
-		c.ghostActive.Add(h)
-		if peakFreq >= 1 {
-			c.ghostFreqRng.add(h, peakFreq)
-		}
+	c.ghostActive.Add(h)
+	if peakFreq >= 1 {
+		c.ghostFreqRng.add(h, peakFreq)
 	}
 	if c.ghostActive.entries >= c.ghostCap {
 		c.ghostAging.Reset()
