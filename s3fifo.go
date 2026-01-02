@@ -69,7 +69,7 @@ const (
 	minDeathRowSize = 8
 )
 
-// smallSize returns the small queue capacity for a given cache capacity.
+// smallRatio returns the optimal small queue ratio (per-mille) for a capacity.
 // Tuned via binary search across cache sizes (hitrate benchmarks):
 //
 //	  8K: 148 (14.8%) - small caches need aggressive filtering
@@ -80,14 +80,6 @@ const (
 //	256K: 152 (15.2%) - large caches need more filtering again
 //
 // Uses piecewise linear interpolation between measured points.
-func smallSize(capacity int) int {
-	if capacity <= 0 {
-		return 0
-	}
-	return capacity * smallRatio(capacity) / 1000
-}
-
-// smallRatio returns the optimal small queue ratio (per-mille) for a capacity.
 func smallRatio(capacity int) int {
 	// Tuning points from binary search (capacity -> ratio per-mille).
 	// Interpolate linearly between points.
@@ -120,7 +112,7 @@ func smallRatio(capacity int) int {
 	return points[len(points)-1].ratio
 }
 
-// ghostSize returns the ghost queue capacity for a given cache capacity.
+// ghostRatio returns the optimal ghost queue ratio (per-mille) for a capacity.
 // Tuned via binary search across cache sizes (hitrate benchmarks):
 //
 //	  8K:  875 ( 88%) - smaller caches need less ghost tracking
@@ -132,14 +124,6 @@ func smallRatio(capacity int) int {
 //
 // Monotonic increase: larger caches have more unique keys cycling through,
 // so they need proportionally larger ghost queues to track evictions.
-func ghostSize(capacity int) int {
-	if capacity <= 0 {
-		return 0
-	}
-	return capacity * ghostRatio(capacity) / 1000
-}
-
-// ghostRatio returns the optimal ghost queue ratio (per-mille) for a capacity.
 func ghostRatio(capacity int) int {
 	// Tuning points from binary search (capacity -> ratio per-mille).
 	// Interpolate linearly between points.
@@ -295,6 +279,8 @@ func timeToSec(t time.Time) uint32 {
 
 // entry is a cached key-value pair with eviction metadata.
 // Uses seqlock for zero-allocation value storage.
+//
+//nolint:govet // fieldalignment: generic struct layout varies by type parameters
 type entry[K comparable, V any] struct {
 	key       K
 	value     V             // stored inline, protected by seqlock
@@ -307,10 +293,22 @@ type entry[K comparable, V any] struct {
 }
 
 // storeValue stores a value using seqlock protocol (zero allocations).
+// Uses CAS to ensure only one writer can be active at a time, preventing
+// sequence corruption when multiple goroutines update the same entry.
 func (e *entry[K, V]) storeValue(v V) {
-	seq := e.seq.Add(1) // start write (now odd) - has release semantics
-	e.value = v
-	e.seq.Store(seq + 1) // end write (now even) - has release semantics
+	for {
+		seq := e.seq.Load()
+		if seq&1 != 0 {
+			// Another writer is in progress, spin
+			continue
+		}
+		if e.seq.CompareAndSwap(seq, seq+1) {
+			// Successfully marked as writing (seq is now odd)
+			e.value = v
+			e.seq.Store(seq + 2) // End write (seq is now even)
+			return
+		}
+	}
 }
 
 // loadValue loads a value using seqlock protocol.
@@ -437,8 +435,8 @@ func newS3FIFO[K comparable, V any](cfg *config) *s3fifo[K, V] {
 		mu:          xsync.NewRBMutex(),
 		entries:     xsync.NewMap[K, *entry[K, V]](xsync.WithPresize(size)),
 		capacity:    size,
-		smallThresh: smallSize(size),
-		ghostCap:    ghostSize(size),
+		smallThresh: size * smallRatio(size) / 1000,
+		ghostCap:    size * ghostRatio(size) / 1000,
 		ghostActive: newBloomFilter(size, ghostFPRate),
 		ghostAging:  newBloomFilter(size, ghostFPRate),
 		deathRow:    make([]*entry[K, V], deathRowSize),
@@ -844,9 +842,7 @@ func (c *s3fifo[K, V]) flush() int {
 	c.ghostActive.Reset()
 	c.ghostAging.Reset()
 	c.ghostFreqRng = ghostFreqRing{}
-	for i := range c.deathRow {
-		c.deathRow[i] = nil
-	}
+	clear(c.deathRow)
 	c.deathRowPos = 0
 	c.totalEntries.Store(0)
 	return n

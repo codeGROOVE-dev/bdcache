@@ -22,7 +22,7 @@ type TieredCache[K comparable, V any] struct {
 
 // NewTiered creates a cache backed by the given store.
 func NewTiered[K comparable, V any](store Store[K, V], opts ...Option) (*TieredCache[K, V], error) {
-	cfg := defaultConfig()
+	cfg := &config{size: 16384}
 	for _, opt := range opts {
 		opt(cfg)
 	}
@@ -66,10 +66,6 @@ func (c *TieredCache[K, V]) Get(ctx context.Context, key K) (V, bool, error) {
 	return val, true, nil
 }
 
-func (c *TieredCache[K, V]) expiry(ttl time.Duration) time.Time {
-	return calculateExpiry(ttl, c.defaultTTL)
-}
-
 // Set stores to memory first (always), then persistence.
 // Uses the default TTL specified at cache creation.
 func (c *TieredCache[K, V]) Set(ctx context.Context, key K, value V) error {
@@ -79,7 +75,7 @@ func (c *TieredCache[K, V]) Set(ctx context.Context, key K, value V) error {
 // SetTTL stores to memory first (always), then persistence with explicit TTL.
 // A zero or negative TTL means the entry never expires.
 func (c *TieredCache[K, V]) SetTTL(ctx context.Context, key K, value V, ttl time.Duration) error {
-	expiry := c.expiry(ttl)
+	expiry := calculateExpiry(ttl, c.defaultTTL)
 
 	if err := c.Store.ValidateKey(key); err != nil {
 		return err
@@ -102,7 +98,7 @@ func (c *TieredCache[K, V]) SetAsync(ctx context.Context, key K, value V) error 
 // SetAsyncTTL stores to memory synchronously, persistence asynchronously with explicit TTL.
 // Persistence errors are logged, not returned.
 func (c *TieredCache[K, V]) SetAsyncTTL(ctx context.Context, key K, value V, ttl time.Duration) error {
-	expiry := c.expiry(ttl)
+	expiry := calculateExpiry(ttl, c.defaultTTL)
 
 	if err := c.Store.ValidateKey(key); err != nil {
 		return err
@@ -121,14 +117,14 @@ func (c *TieredCache[K, V]) SetAsyncTTL(ctx context.Context, key K, value V, ttl
 	return nil
 }
 
-// GetSet returns cached value or calls loader. Concurrent calls share one loader.
+// Fetch returns cached value or calls loader. Concurrent calls share one loader.
 // Computed values are stored with the default TTL.
-func (c *TieredCache[K, V]) GetSet(ctx context.Context, key K, loader func(context.Context) (V, error)) (V, error) {
+func (c *TieredCache[K, V]) Fetch(ctx context.Context, key K, loader func(context.Context) (V, error)) (V, error) {
 	return c.getSet(ctx, key, loader, 0)
 }
 
-// GetSetTTL is like GetSet but stores computed values with an explicit TTL.
-func (c *TieredCache[K, V]) GetSetTTL(ctx context.Context, key K, loader func(context.Context) (V, error), ttl time.Duration) (V, error) {
+// FetchTTL is like Fetch but stores computed values with an explicit TTL.
+func (c *TieredCache[K, V]) FetchTTL(ctx context.Context, key K, ttl time.Duration, loader func(context.Context) (V, error)) (V, error) {
 	return c.getSet(ctx, key, loader, ttl)
 }
 
@@ -193,11 +189,11 @@ func (c *TieredCache[K, V]) getSet(ctx context.Context, key K, loader func(conte
 		return zero, err
 	}
 
-	exp := c.expiry(ttl)
+	exp := calculateExpiry(ttl, c.defaultTTL)
 	c.memory.set(key, val, timeToSec(exp))
 
 	if err := c.Store.Set(ctx, key, val, exp); err != nil {
-		slog.Warn("GetSet persistence failed", "key", key, "error", err)
+		slog.Warn("Fetch persistence failed", "key", key, "error", err)
 	}
 
 	call.val = val

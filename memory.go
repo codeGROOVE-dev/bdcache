@@ -25,7 +25,6 @@ type Cache[K comparable, V any] struct {
 	flights    *xsync.Map[K, *flightCall[V]]
 	memory     *s3fifo[K, V]
 	defaultTTL time.Duration
-	noExpiry   bool
 }
 
 // flightCall holds an in-flight computation for singleflight deduplication.
@@ -39,7 +38,7 @@ type flightCall[V any] struct {
 
 // New creates an in-memory cache.
 func New[K comparable, V any](opts ...Option) *Cache[K, V] {
-	cfg := defaultConfig()
+	cfg := &config{size: 16384}
 	for _, opt := range opts {
 		opt(cfg)
 	}
@@ -48,7 +47,6 @@ func New[K comparable, V any](opts ...Option) *Cache[K, V] {
 		flights:    xsync.NewMap[K, *flightCall[V]](),
 		memory:     newS3FIFO[K, V](cfg),
 		defaultTTL: cfg.defaultTTL,
-		noExpiry:   cfg.defaultTTL == 0,
 	}
 }
 
@@ -60,11 +58,7 @@ func (c *Cache[K, V]) Get(key K) (V, bool) {
 // Set stores a value using the default TTL specified at cache creation.
 // If no default TTL was set, the entry never expires.
 func (c *Cache[K, V]) Set(key K, value V) {
-	if c.noExpiry {
-		c.memory.set(key, value, 0)
-		return
-	}
-	c.memory.set(key, value, timeToSec(c.expiry(0)))
+	c.SetTTL(key, value, c.defaultTTL)
 }
 
 // SetTTL stores a value with an explicit TTL.
@@ -83,15 +77,15 @@ func (c *Cache[K, V]) Delete(key K) {
 	c.memory.del(key)
 }
 
-// GetSet returns cached value or calls loader to compute it.
+// Fetch returns cached value or calls loader to compute it.
 // Concurrent calls for the same key share one loader invocation.
 // Computed values are stored with the default TTL.
-func (c *Cache[K, V]) GetSet(key K, loader func() (V, error)) (V, error) {
+func (c *Cache[K, V]) Fetch(key K, loader func() (V, error)) (V, error) {
 	return c.getSet(key, loader, 0)
 }
 
-// GetSetTTL is like GetSet but stores computed values with an explicit TTL.
-func (c *Cache[K, V]) GetSetTTL(key K, loader func() (V, error), ttl time.Duration) (V, error) {
+// FetchTTL is like Fetch but stores computed values with an explicit TTL.
+func (c *Cache[K, V]) FetchTTL(key K, ttl time.Duration, loader func() (V, error)) (V, error) {
 	return c.getSet(key, loader, ttl)
 }
 
@@ -144,17 +138,9 @@ func (c *Cache[K, V]) Flush() int {
 	return c.memory.flush()
 }
 
-func (c *Cache[K, V]) expiry(ttl time.Duration) time.Time {
-	return calculateExpiry(ttl, c.defaultTTL)
-}
-
 type config struct {
 	size       int
 	defaultTTL time.Duration
-}
-
-func defaultConfig() *config {
-	return &config{size: 16384}
 }
 
 // Option configures a Cache.

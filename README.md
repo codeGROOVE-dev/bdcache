@@ -38,10 +38,10 @@ err = cache.Set(ctx, "user:123", user)       // sync write
 err = cache.SetAsync(ctx, "user:456", user)  // async write
 ```
 
-GetSet deduplicates concurrent loads to prevent thundering herd situations:
+Fetch deduplicates concurrent loads to prevent thundering herd situations:
 
 ```go
-user, err := cache.GetSet("user:123", func() (User, error) {
+user, err := cache.Fetch("user:123", func() (User, error) {
     return db.LoadUser("123")
 })
 ```
@@ -72,9 +72,9 @@ fido has been exhaustively tested for performance using [gocachemark](https://gi
 
 Where fido wins:
 
-- **Throughput**: 744M int gets/sec avg (2.7X faster than otter). 95M string sets/sec avg (26X faster than otter).
-- **Hit rate**: Wins 6 of 9 workloads. Highest average across all datasets (+2.9% vs otter, +0.9% vs sieve).
-- **Latency**: 8ns int gets, 10ns string gets, zero allocations (7X lower latency than otter)
+- **Throughput**: 727M int gets/sec avg (2.7X faster than otter). 70M string sets/sec avg (22X faster than otter).
+- **Hit rate**: Wins 6 of 9 workloads. Highest average across all datasets (+2.8% vs otter, +0.9% vs sieve).
+- **Latency**: 8ns int gets, 10ns string gets, zero allocations (4X lower latency than otter)
 
 Where others win:
 

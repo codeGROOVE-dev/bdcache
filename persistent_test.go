@@ -268,7 +268,7 @@ func (m *injectingMockStore[K, V]) Get(ctx context.Context, key K) (v V, expiry 
 	return m.mockStore.Get(ctx, key)
 }
 
-func TestTieredCache_GetSet_SecondMemoryCheck(t *testing.T) {
+func TestTieredCache_Fetch_SecondMemoryCheck(t *testing.T) {
 	// This test triggers the second memory check path in getSet (line 166-171)
 	// by injecting a value into memory during the first store.Get call.
 	store := newInjectingMockStore[string, int]()
@@ -286,12 +286,12 @@ func TestTieredCache_GetSet_SecondMemoryCheck(t *testing.T) {
 	ctx := context.Background()
 
 	loaderCalled := false
-	val, err := cache.GetSet(ctx, "key1", func(context.Context) (int, error) {
+	val, err := cache.Fetch(ctx, "key1", func(context.Context) (int, error) {
 		loaderCalled = true
 		return 42, nil
 	})
 	if err != nil {
-		t.Fatalf("GetSet failed: %v", err)
+		t.Fatalf("Fetch failed: %v", err)
 	}
 
 	// Should return injected value from second memory check
@@ -1115,7 +1115,7 @@ func TestNewTiered_WithTTL_Behavior(t *testing.T) {
 	}
 }
 
-func TestTieredCache_GetSet_Basic(t *testing.T) {
+func TestTieredCache_Fetch_Basic(t *testing.T) {
 	store := newMockStore[string, int]()
 	cache, err := NewTiered[string, int](store)
 	if err != nil {
@@ -1131,24 +1131,24 @@ func TestTieredCache_GetSet_Basic(t *testing.T) {
 	}
 
 	// First call - should call loader
-	val, err := cache.GetSet(ctx, "key1", loader)
+	val, err := cache.Fetch(ctx, "key1", loader)
 	if err != nil {
-		t.Fatalf("GetSet error: %v", err)
+		t.Fatalf("Fetch error: %v", err)
 	}
 	if val != 42 {
-		t.Errorf("GetSet value = %d; want 42", val)
+		t.Errorf("Fetch value = %d; want 42", val)
 	}
 	if loaderCalls != 1 {
 		t.Errorf("loader calls = %d; want 1", loaderCalls)
 	}
 
 	// Second call - should use cached value, not call loader
-	val, err = cache.GetSet(ctx, "key1", loader)
+	val, err = cache.Fetch(ctx, "key1", loader)
 	if err != nil {
-		t.Fatalf("GetSet error: %v", err)
+		t.Fatalf("Fetch error: %v", err)
 	}
 	if val != 42 {
-		t.Errorf("GetSet value = %d; want 42", val)
+		t.Errorf("Fetch value = %d; want 42", val)
 	}
 	if loaderCalls != 1 {
 		t.Errorf("loader calls = %d; want 1 (should use cache)", loaderCalls)
@@ -1164,7 +1164,7 @@ func TestTieredCache_GetSet_Basic(t *testing.T) {
 	}
 }
 
-func TestTieredCache_GetSet_FromPersistence(t *testing.T) {
+func TestTieredCache_Fetch_FromPersistence(t *testing.T) {
 	store := newMockStore[string, int]()
 	cache, err := NewTiered[string, int](store)
 	if err != nil {
@@ -1183,20 +1183,20 @@ func TestTieredCache_GetSet_FromPersistence(t *testing.T) {
 		return 42, nil
 	}
 
-	// GetSet should find value in persistence, not call loader
-	val, err := cache.GetSet(ctx, "key1", loader)
+	// Fetch should find value in persistence, not call loader
+	val, err := cache.Fetch(ctx, "key1", loader)
 	if err != nil {
-		t.Fatalf("GetSet error: %v", err)
+		t.Fatalf("Fetch error: %v", err)
 	}
 	if val != 99 {
-		t.Errorf("GetSet value = %d; want 99 (from persistence)", val)
+		t.Errorf("Fetch value = %d; want 99 (from persistence)", val)
 	}
 	if loaderCalls != 0 {
 		t.Errorf("loader calls = %d; want 0 (should use persistence)", loaderCalls)
 	}
 }
 
-func TestTieredCache_GetSet_LoaderError(t *testing.T) {
+func TestTieredCache_Fetch_LoaderError(t *testing.T) {
 	store := newMockStore[string, int]()
 	cache, err := NewTiered[string, int](store)
 	if err != nil {
@@ -1209,9 +1209,9 @@ func TestTieredCache_GetSet_LoaderError(t *testing.T) {
 		return 0, fmt.Errorf("loader error")
 	}
 
-	_, err = cache.GetSet(ctx, "key1", loader)
+	_, err = cache.Fetch(ctx, "key1", loader)
 	if err == nil {
-		t.Fatal("GetSet should return error from loader")
+		t.Fatal("Fetch should return error from loader")
 	}
 
 	// Value should not be cached in memory
@@ -1230,7 +1230,7 @@ func TestTieredCache_GetSet_LoaderError(t *testing.T) {
 	}
 }
 
-func TestTieredCache_GetSet_ThunderingHerd(t *testing.T) {
+func TestTieredCache_Fetch_ThunderingHerd(t *testing.T) {
 	store := newMockStore[string, int]()
 	cache, err := NewTiered[string, int](store)
 	if err != nil {
@@ -1254,7 +1254,7 @@ func TestTieredCache_GetSet_ThunderingHerd(t *testing.T) {
 		return 42, nil
 	}
 
-	// Launch many concurrent GetSet calls for the same key
+	// Launch many concurrent Fetch calls for the same key
 	var wg sync.WaitGroup
 	results := make([]int, 100)
 	errors := make([]error, 100)
@@ -1263,7 +1263,7 @@ func TestTieredCache_GetSet_ThunderingHerd(t *testing.T) {
 		wg.Add(1)
 		go func(idx int) {
 			defer wg.Done()
-			results[idx], errors[idx] = cache.GetSet(ctx, "key1", loader)
+			results[idx], errors[idx] = cache.Fetch(ctx, "key1", loader)
 		}(i)
 	}
 
@@ -1285,7 +1285,7 @@ func TestTieredCache_GetSet_ThunderingHerd(t *testing.T) {
 	}
 }
 
-func TestTieredCache_GetSet_WithTTL(t *testing.T) {
+func TestTieredCache_Fetch_WithTTL(t *testing.T) {
 	store := newMockStore[string, int]()
 	cache, err := NewTiered[string, int](store)
 	if err != nil {
@@ -1301,31 +1301,31 @@ func TestTieredCache_GetSet_WithTTL(t *testing.T) {
 	}
 
 	// First call with short TTL (1 second granularity)
-	val, err := cache.GetSetTTL(ctx, "key1", loader, 1*time.Second)
+	val, err := cache.FetchTTL(ctx, "key1", 1*time.Second, loader)
 	if err != nil {
-		t.Fatalf("GetSet error: %v", err)
+		t.Fatalf("Fetch error: %v", err)
 	}
 	if val != 10 {
-		t.Errorf("first GetSet value = %d; want 10", val)
+		t.Errorf("first Fetch value = %d; want 10", val)
 	}
 
 	// Wait for TTL to expire
 	time.Sleep(2 * time.Second)
 
 	// Second call - should call loader again (cache expired)
-	val, err = cache.GetSetTTL(ctx, "key1", loader, 1*time.Second)
+	val, err = cache.FetchTTL(ctx, "key1", 1*time.Second, loader)
 	if err != nil {
-		t.Fatalf("GetSet error: %v", err)
+		t.Fatalf("Fetch error: %v", err)
 	}
 	if val != 20 {
-		t.Errorf("second GetSet value = %d; want 20", val)
+		t.Errorf("second Fetch value = %d; want 20", val)
 	}
 	if loaderCalls != 2 {
 		t.Errorf("loader calls = %d; want 2", loaderCalls)
 	}
 }
 
-func TestTieredCache_GetSet_PersistenceFailure(t *testing.T) {
+func TestTieredCache_Fetch_PersistenceFailure(t *testing.T) {
 	store := newMockStore[string, int]()
 	cache, err := NewTiered[string, int](store)
 	if err != nil {
@@ -1341,13 +1341,13 @@ func TestTieredCache_GetSet_PersistenceFailure(t *testing.T) {
 	// Make persistence fail
 	store.setFailSet(true)
 
-	// GetSet should still succeed (value in memory)
-	val, err := cache.GetSet(ctx, "key1", loader)
+	// Fetch should still succeed (value in memory)
+	val, err := cache.Fetch(ctx, "key1", loader)
 	if err != nil {
-		t.Fatalf("GetSet should succeed even if persistence fails: %v", err)
+		t.Fatalf("Fetch should succeed even if persistence fails: %v", err)
 	}
 	if val != 42 {
-		t.Errorf("GetSet value = %d; want 42", val)
+		t.Errorf("Fetch value = %d; want 42", val)
 	}
 
 	// Value should be in memory
@@ -1360,7 +1360,7 @@ func TestTieredCache_GetSet_PersistenceFailure(t *testing.T) {
 	}
 }
 
-func TestTieredCache_GetSet_KeyValidationError(t *testing.T) {
+func TestTieredCache_Fetch_KeyValidationError(t *testing.T) {
 	store := &validatingMockStore[string, int]{
 		mockStore: newMockStore[string, int](),
 	}
@@ -1377,10 +1377,10 @@ func TestTieredCache_GetSet_KeyValidationError(t *testing.T) {
 		return 42, nil
 	}
 
-	// GetSet with invalid key should return error
-	_, err = cache.GetSet(ctx, "invalid/key", loader)
+	// Fetch with invalid key should return error
+	_, err = cache.Fetch(ctx, "invalid/key", loader)
 	if err == nil {
-		t.Error("GetSet with invalid key should return error")
+		t.Error("Fetch with invalid key should return error")
 	}
 
 	// Loader should not have been called
@@ -1389,7 +1389,7 @@ func TestTieredCache_GetSet_KeyValidationError(t *testing.T) {
 	}
 }
 
-func TestTieredCache_GetSet_PersistenceLoadFailure(t *testing.T) {
+func TestTieredCache_Fetch_PersistenceLoadFailure(t *testing.T) {
 	store := newMockStore[string, int]()
 	cache, err := NewTiered[string, int](store)
 	if err != nil {
@@ -1405,14 +1405,14 @@ func TestTieredCache_GetSet_PersistenceLoadFailure(t *testing.T) {
 	// Make persistence load fail
 	store.setFailGet(true)
 
-	// GetSet should return error when persistence load fails
-	_, err = cache.GetSet(ctx, "key1", loader)
+	// Fetch should return error when persistence load fails
+	_, err = cache.Fetch(ctx, "key1", loader)
 	if err == nil {
-		t.Error("GetSet should return error when persistence load fails")
+		t.Error("Fetch should return error when persistence load fails")
 	}
 }
 
-func TestTieredCache_GetSet_PersistenceLoadFailure_InFlight(t *testing.T) {
+func TestTieredCache_Fetch_PersistenceLoadFailure_InFlight(t *testing.T) {
 	store := newMockStore[string, int]()
 	cache, err := NewTiered[string, int](store)
 	if err != nil {
@@ -1422,13 +1422,13 @@ func TestTieredCache_GetSet_PersistenceLoadFailure_InFlight(t *testing.T) {
 
 	ctx := context.Background()
 
-	// First, do a successful GetSet to prime the flight
+	// First, do a successful Fetch to prime the flight
 	loader1 := func(ctx context.Context) (int, error) {
 		return 42, nil
 	}
-	_, err = cache.GetSet(ctx, "key1", loader1)
+	_, err = cache.Fetch(ctx, "key1", loader1)
 	if err != nil {
-		t.Fatalf("first GetSet error: %v", err)
+		t.Fatalf("first Fetch error: %v", err)
 	}
 
 	// Clear memory to force persistence check
@@ -1442,13 +1442,13 @@ func TestTieredCache_GetSet_PersistenceLoadFailure_InFlight(t *testing.T) {
 	}
 
 	// This tests the persistence load failure path inside the singleflight
-	_, err = cache.GetSet(ctx, "key1", loader2)
+	_, err = cache.Fetch(ctx, "key1", loader2)
 	if err == nil {
-		t.Error("GetSet should return error when persistence load fails in singleflight")
+		t.Error("Fetch should return error when persistence load fails in singleflight")
 	}
 }
 
-func TestTieredCache_GetSet_CacheHitAfterFlight(t *testing.T) {
+func TestTieredCache_Fetch_CacheHitAfterFlight(t *testing.T) {
 	store := newMockStore[string, int]()
 	cache, err := NewTiered[string, int](store)
 	if err != nil {
@@ -1472,12 +1472,12 @@ func TestTieredCache_GetSet_CacheHitAfterFlight(t *testing.T) {
 
 	go func() {
 		defer wg.Done()
-		val, err := cache.GetSet(ctx, "key1", loader1)
+		val, err := cache.Fetch(ctx, "key1", loader1)
 		if err != nil {
-			t.Errorf("first GetSet error: %v", err)
+			t.Errorf("first Fetch error: %v", err)
 		}
 		if val != 42 {
-			t.Errorf("first GetSet value = %d; want 42", val)
+			t.Errorf("first Fetch value = %d; want 42", val)
 		}
 	}()
 
@@ -1489,12 +1489,12 @@ func TestTieredCache_GetSet_CacheHitAfterFlight(t *testing.T) {
 			atomic.AddInt32(&loaderCalls, 1)
 			return 99, nil // Different value
 		}
-		val, err := cache.GetSet(ctx, "key1", loader2)
+		val, err := cache.Fetch(ctx, "key1", loader2)
 		if err != nil {
-			t.Errorf("second GetSet error: %v", err)
+			t.Errorf("second Fetch error: %v", err)
 		}
 		if val != 42 {
-			t.Errorf("second GetSet value = %d; want 42 (from first loader)", val)
+			t.Errorf("second Fetch value = %d; want 42 (from first loader)", val)
 		}
 	}()
 
@@ -1505,7 +1505,7 @@ func TestTieredCache_GetSet_CacheHitAfterFlight(t *testing.T) {
 	}
 }
 
-func TestTieredCache_GetSet_FoundInPersistenceDuringSingleflight(t *testing.T) {
+func TestTieredCache_Fetch_FoundInPersistenceDuringSingleflight(t *testing.T) {
 	store := newMockStore[string, int]()
 	cache, err := NewTiered[string, int](store)
 	if err != nil {
@@ -1526,13 +1526,13 @@ func TestTieredCache_GetSet_FoundInPersistenceDuringSingleflight(t *testing.T) {
 		return 42, nil
 	}
 
-	// GetSet should find value in persistence (after initial check), not call loader
-	val, err := cache.GetSet(ctx, "key1", loader)
+	// Fetch should find value in persistence (after initial check), not call loader
+	val, err := cache.Fetch(ctx, "key1", loader)
 	if err != nil {
-		t.Fatalf("GetSet error: %v", err)
+		t.Fatalf("Fetch error: %v", err)
 	}
 	if val != 77 {
-		t.Errorf("GetSet value = %d; want 77 (from persistence)", val)
+		t.Errorf("Fetch value = %d; want 77 (from persistence)", val)
 	}
 	if loaderCalls != 0 {
 		t.Errorf("loader calls = %d; want 0", loaderCalls)
@@ -1693,9 +1693,9 @@ func TestTieredCache_SetAsync_InvalidKey(t *testing.T) {
 	}
 }
 
-// TestTieredCache_GetSet_MemoryHitDuringSingleflight tests the path where memory
+// TestTieredCache_Fetch_MemoryHitDuringSingleflight tests the path where memory
 // has the value after acquiring singleflight.
-func TestTieredCache_GetSet_MemoryHitDuringSingleflight(t *testing.T) {
+func TestTieredCache_Fetch_MemoryHitDuringSingleflight(t *testing.T) {
 	store := newMockStore[string, int]()
 	cache, err := NewTiered[string, int](store)
 	if err != nil {
@@ -1717,11 +1717,11 @@ func TestTieredCache_GetSet_MemoryHitDuringSingleflight(t *testing.T) {
 		defer done.Done()
 		started.Done()
 
-		if _, err := cache.GetSet(ctx, key, func(context.Context) (int, error) {
+		if _, err := cache.Fetch(ctx, key, func(context.Context) (int, error) {
 			time.Sleep(50 * time.Millisecond)
 			return 1, nil
 		}); err != nil {
-			t.Errorf("GetSet error: %v", err)
+			t.Errorf("Fetch error: %v", err)
 		}
 	}()
 
@@ -1746,9 +1746,9 @@ func TestTieredCache_GetSet_MemoryHitDuringSingleflight(t *testing.T) {
 	}
 }
 
-// TestTieredCache_GetSet_PersistenceHitDuringSingleflight tests the path where
+// TestTieredCache_Fetch_PersistenceHitDuringSingleflight tests the path where
 // persistence has the value during singleflight (second check).
-func TestTieredCache_GetSet_PersistenceHitDuringSingleflight(t *testing.T) {
+func TestTieredCache_Fetch_PersistenceHitDuringSingleflight(t *testing.T) {
 	store := newMockStore[string, int]()
 	cache, err := NewTiered[string, int](store)
 	if err != nil {
@@ -1770,13 +1770,13 @@ func TestTieredCache_GetSet_PersistenceHitDuringSingleflight(t *testing.T) {
 		defer done.Done()
 		started.Done()
 
-		val, err := cache.GetSet(ctx, key, func(ctx context.Context) (int, error) {
+		val, err := cache.Fetch(ctx, key, func(ctx context.Context) (int, error) {
 			// By this time, the second goroutine should have stored to persistence
 			time.Sleep(50 * time.Millisecond)
 			return 1, nil
 		})
 		if err != nil {
-			t.Errorf("GetSet error: %v", err)
+			t.Errorf("Fetch error: %v", err)
 		}
 		// Value could be 99 (from persistence) or 1 (from loader)
 		if val != 99 && val != 1 {
@@ -1798,8 +1798,8 @@ func TestTieredCache_GetSet_PersistenceHitDuringSingleflight(t *testing.T) {
 	done.Wait()
 }
 
-// TestTieredCache_GetSet_SecondCheckMemory tests the second memory check inside singleflight.
-func TestTieredCache_GetSet_SecondCheckMemory(t *testing.T) {
+// TestTieredCache_Fetch_SecondCheckMemory tests the second memory check inside singleflight.
+func TestTieredCache_Fetch_SecondCheckMemory(t *testing.T) {
 	store := newMockStore[string, int]()
 	cache, err := NewTiered[string, int](store)
 	if err != nil {
@@ -1826,9 +1826,9 @@ func TestTieredCache_GetSet_SecondCheckMemory(t *testing.T) {
 		wg.Add(1)
 		go func(idx int) {
 			defer wg.Done()
-			val, err := cache.GetSet(ctx, fmt.Sprintf("key%d", idx), loader)
+			val, err := cache.Fetch(ctx, fmt.Sprintf("key%d", idx), loader)
 			if err != nil {
-				t.Errorf("GetSet error: %v", err)
+				t.Errorf("Fetch error: %v", err)
 				return
 			}
 			results[idx] = val
@@ -1845,8 +1845,8 @@ func TestTieredCache_GetSet_SecondCheckMemory(t *testing.T) {
 	}
 }
 
-// TestTieredCache_GetSet_SecondStoreGetError tests when second store.Get fails.
-func TestTieredCache_GetSet_SecondStoreGetError(t *testing.T) {
+// TestTieredCache_Fetch_SecondStoreGetError tests when second store.Get fails.
+func TestTieredCache_Fetch_SecondStoreGetError(t *testing.T) {
 	store := newSequenceMockStore[string, int]()
 	// First Get returns not found, second Get fails
 	store.failOnGetN = 2
@@ -1859,7 +1859,7 @@ func TestTieredCache_GetSet_SecondStoreGetError(t *testing.T) {
 
 	ctx := context.Background()
 
-	_, err = cache.GetSet(ctx, "key1", func(ctx context.Context) (int, error) {
+	_, err = cache.Fetch(ctx, "key1", func(ctx context.Context) (int, error) {
 		return 42, nil
 	})
 
@@ -1869,8 +1869,8 @@ func TestTieredCache_GetSet_SecondStoreGetError(t *testing.T) {
 	}
 }
 
-// TestTieredCache_GetSet_SecondStoreGetFound tests when second store.Get finds value.
-func TestTieredCache_GetSet_SecondStoreGetFound(t *testing.T) {
+// TestTieredCache_Fetch_SecondStoreGetFound tests when second store.Get finds value.
+func TestTieredCache_Fetch_SecondStoreGetFound(t *testing.T) {
 	store := newSequenceMockStore[string, int]()
 	// First Get returns not found, second Get returns value
 	store.returnOnGetN = 2
@@ -1885,12 +1885,12 @@ func TestTieredCache_GetSet_SecondStoreGetFound(t *testing.T) {
 	ctx := context.Background()
 
 	loaderCalled := false
-	val, err := cache.GetSet(ctx, "key1", func(ctx context.Context) (int, error) {
+	val, err := cache.Fetch(ctx, "key1", func(ctx context.Context) (int, error) {
 		loaderCalled = true
 		return 42, nil
 	})
 	if err != nil {
-		t.Fatalf("GetSet failed: %v", err)
+		t.Fatalf("Fetch failed: %v", err)
 	}
 
 	// Should return value from second store.Get, not from loader

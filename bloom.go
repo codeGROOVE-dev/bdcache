@@ -60,9 +60,7 @@ func (b *bloomFilter) Contains(h uint64) bool {
 }
 
 func (b *bloomFilter) Reset() {
-	for i := range b.data {
-		b.data[i] = 0
-	}
+	clear(b.data)
 	b.entries = 0
 }
 

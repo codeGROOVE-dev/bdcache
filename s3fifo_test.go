@@ -788,8 +788,8 @@ func TestS3FIFO_GhostQueueSize(t *testing.T) {
 	capacity := 1000
 	cache := newS3FIFO[int, int](&config{size: capacity})
 
-	// Ghost capacity varies by cache size (see ghostSize function).
-	want := ghostSize(capacity)
+	// Ghost capacity varies by cache size (see ghostRatio function).
+	want := capacity * ghostRatio(capacity) / 1000
 	if cache.ghostCap != want {
 		t.Errorf("ghost capacity = %d; want %d", cache.ghostCap, want)
 	}
@@ -2867,7 +2867,10 @@ func TestSmallSize(t *testing.T) {
 	}
 
 	for _, tt := range tests {
-		got := smallSize(tt.capacity)
+		var got int
+		if tt.capacity > 0 {
+			got = tt.capacity * smallRatio(tt.capacity) / 1000
+		}
 		if got != tt.want {
 			t.Errorf("smallSize(%d) = %d; want %d", tt.capacity, got, tt.want)
 		}
@@ -2951,7 +2954,10 @@ func TestGhostSize(t *testing.T) {
 	}
 
 	for _, tt := range tests {
-		got := ghostSize(tt.capacity)
+		var got int
+		if tt.capacity > 0 {
+			got = tt.capacity * ghostRatio(tt.capacity) / 1000
+		}
 		if got != tt.want {
 			t.Errorf("ghostSize(%d) = %d; want %d", tt.capacity, got, tt.want)
 		}

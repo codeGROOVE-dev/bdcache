@@ -420,7 +420,7 @@ func TestCache_Set_NoDefaultTTL(t *testing.T) {
 	}
 }
 
-func TestCache_GetSet_Basic(t *testing.T) {
+func TestCache_Fetch_Basic(t *testing.T) {
 	cache := New[string, int]()
 
 	loaderCalls := 0
@@ -430,40 +430,40 @@ func TestCache_GetSet_Basic(t *testing.T) {
 	}
 
 	// First call - should call loader
-	val, err := cache.GetSet("key1", loader)
+	val, err := cache.Fetch("key1", loader)
 	if err != nil {
-		t.Fatalf("GetSet error: %v", err)
+		t.Fatalf("Fetch error: %v", err)
 	}
 	if val != 42 {
-		t.Errorf("GetSet value = %d; want 42", val)
+		t.Errorf("Fetch value = %d; want 42", val)
 	}
 	if loaderCalls != 1 {
 		t.Errorf("loader calls = %d; want 1", loaderCalls)
 	}
 
 	// Second call - should use cached value, not call loader
-	val, err = cache.GetSet("key1", loader)
+	val, err = cache.Fetch("key1", loader)
 	if err != nil {
-		t.Fatalf("GetSet error: %v", err)
+		t.Fatalf("Fetch error: %v", err)
 	}
 	if val != 42 {
-		t.Errorf("GetSet value = %d; want 42", val)
+		t.Errorf("Fetch value = %d; want 42", val)
 	}
 	if loaderCalls != 1 {
 		t.Errorf("loader calls = %d; want 1 (should use cache)", loaderCalls)
 	}
 }
 
-func TestCache_GetSet_LoaderError(t *testing.T) {
+func TestCache_Fetch_LoaderError(t *testing.T) {
 	cache := New[string, int]()
 
 	loader := func() (int, error) {
 		return 0, fmt.Errorf("loader error")
 	}
 
-	_, err := cache.GetSet("key1", loader)
+	_, err := cache.Fetch("key1", loader)
 	if err == nil {
-		t.Fatal("GetSet should return error from loader")
+		t.Fatal("Fetch should return error from loader")
 	}
 
 	// Value should not be cached
@@ -473,7 +473,7 @@ func TestCache_GetSet_LoaderError(t *testing.T) {
 	}
 }
 
-func TestCache_GetSet_ThunderingHerd(t *testing.T) {
+func TestCache_Fetch_ThunderingHerd(t *testing.T) {
 	cache := New[string, int]()
 
 	var loaderCalls int32
@@ -491,7 +491,7 @@ func TestCache_GetSet_ThunderingHerd(t *testing.T) {
 		return 42, nil
 	}
 
-	// Launch many concurrent GetSet calls for the same key
+	// Launch many concurrent Fetch calls for the same key
 	var wg sync.WaitGroup
 	results := make([]int, 100)
 	errors := make([]error, 100)
@@ -500,7 +500,7 @@ func TestCache_GetSet_ThunderingHerd(t *testing.T) {
 		wg.Add(1)
 		go func(idx int) {
 			defer wg.Done()
-			results[idx], errors[idx] = cache.GetSet("key1", loader)
+			results[idx], errors[idx] = cache.Fetch("key1", loader)
 		}(i)
 	}
 
@@ -522,7 +522,7 @@ func TestCache_GetSet_ThunderingHerd(t *testing.T) {
 	}
 }
 
-func TestCache_GetSet_WithTTL(t *testing.T) {
+func TestCache_Fetch_WithTTL(t *testing.T) {
 	cache := New[string, int]()
 
 	loaderCalls := 0
@@ -532,31 +532,31 @@ func TestCache_GetSet_WithTTL(t *testing.T) {
 	}
 
 	// First call with short TTL (1 second granularity)
-	val, err := cache.GetSetTTL("key1", loader, 1*time.Second)
+	val, err := cache.FetchTTL("key1", 1*time.Second, loader)
 	if err != nil {
-		t.Fatalf("GetSet error: %v", err)
+		t.Fatalf("Fetch error: %v", err)
 	}
 	if val != 10 {
-		t.Errorf("first GetSet value = %d; want 10", val)
+		t.Errorf("first Fetch value = %d; want 10", val)
 	}
 
 	// Wait for TTL to expire
 	time.Sleep(2 * time.Second)
 
 	// Second call - should call loader again (cache expired)
-	val, err = cache.GetSetTTL("key1", loader, 1*time.Second)
+	val, err = cache.FetchTTL("key1", 1*time.Second, loader)
 	if err != nil {
-		t.Fatalf("GetSet error: %v", err)
+		t.Fatalf("Fetch error: %v", err)
 	}
 	if val != 20 {
-		t.Errorf("second GetSet value = %d; want 20", val)
+		t.Errorf("second Fetch value = %d; want 20", val)
 	}
 	if loaderCalls != 2 {
 		t.Errorf("loader calls = %d; want 2", loaderCalls)
 	}
 }
 
-func TestCache_GetSet_IntKeys(t *testing.T) {
+func TestCache_Fetch_IntKeys(t *testing.T) {
 	cache := New[int, int](Size(1000))
 
 	var loaderCalls int32
@@ -571,12 +571,12 @@ func TestCache_GetSet_IntKeys(t *testing.T) {
 	for i := range 50 {
 		wg.Go(func() {
 			// All goroutines request the same key
-			val, err := cache.GetSet(123, loader)
+			val, err := cache.Fetch(123, loader)
 			if err != nil {
-				t.Errorf("GetSet error: %v", err)
+				t.Errorf("Fetch error: %v", err)
 			}
 			if val != 42 {
-				t.Errorf("GetSet value = %d; want 42", val)
+				t.Errorf("Fetch value = %d; want 42", val)
 			}
 		})
 		// Stagger slightly to ensure overlap
@@ -593,12 +593,12 @@ func TestCache_GetSet_IntKeys(t *testing.T) {
 	// Verify different int keys work independently
 	loaderCalls = 0
 	for i := range 10 {
-		_, err := cache.GetSet(i, func() (int, error) {
+		_, err := cache.Fetch(i, func() (int, error) {
 			atomic.AddInt32(&loaderCalls, 1)
 			return i * 10, nil
 		})
 		if err != nil {
-			t.Fatalf("GetSet key %d error: %v", i, err)
+			t.Fatalf("Fetch key %d error: %v", i, err)
 		}
 	}
 
@@ -651,30 +651,30 @@ func TestCache_CapacityEfficiency_StringKeys(t *testing.T) {
 	}
 }
 
-// TestCache_GetSet_CacheHitDuringSingleflight is in memory_race_test.go
+// TestCache_Fetch_CacheHitDuringSingleflight is in memory_race_test.go
 // It tests concurrent cache access which triggers seqlock races.
 
-func TestCache_GetSet_RaceCondition(t *testing.T) {
+func TestCache_Fetch_RaceCondition(t *testing.T) {
 	// Test the path where cache is populated between first check and singleflight
 	cache := New[string, int](Size(1000))
 
 	var wg sync.WaitGroup
 
-	// Run many concurrent GetSets with a mix of slow and fast loaders
+	// Run many concurrent Fetchs with a mix of slow and fast loaders
 	for i := range 20 {
 		wg.Add(1)
 		go func(idx int) {
 			defer wg.Done()
 			key := fmt.Sprintf("key%d", idx%5) // Only 5 unique keys
 
-			val, err := cache.GetSet(key, func() (int, error) {
+			val, err := cache.Fetch(key, func() (int, error) {
 				if idx%3 == 0 {
 					time.Sleep(10 * time.Millisecond)
 				}
 				return idx * 10, nil
 			})
 			if err != nil {
-				t.Errorf("GetSet error: %v", err)
+				t.Errorf("Fetch error: %v", err)
 			}
 			if val < 0 {
 				t.Errorf("unexpected value: %d", val)
@@ -685,9 +685,9 @@ func TestCache_GetSet_RaceCondition(t *testing.T) {
 	wg.Wait()
 }
 
-// TestCache_GetSet_MemoryHitAfterSingleflightAcquire tests the path where
+// TestCache_Fetch_MemoryHitAfterSingleflightAcquire tests the path where
 // the cache is populated between winning singleflight and checking cache again.
-func TestCache_GetSet_MemoryHitAfterSingleflightAcquire(t *testing.T) {
+func TestCache_Fetch_MemoryHitAfterSingleflightAcquire(t *testing.T) {
 	// This is tricky to test because the window is very small.
 	// We use a contrived scenario with concurrent access.
 	cache := New[string, int](Size(100))
@@ -706,12 +706,12 @@ func TestCache_GetSet_MemoryHitAfterSingleflightAcquire(t *testing.T) {
 		defer done.Done()
 		started.Done() // Signal that we've started
 
-		if _, err := cache.GetSet(key, func() (int, error) {
+		if _, err := cache.Fetch(key, func() (int, error) {
 			// Wait long enough for the second Set to happen
 			time.Sleep(50 * time.Millisecond)
 			return 1, nil
 		}); err != nil {
-			t.Errorf("GetSet error: %v", err)
+			t.Errorf("Fetch error: %v", err)
 		}
 	}()
 
@@ -735,28 +735,28 @@ func TestCache_GetSet_MemoryHitAfterSingleflightAcquire(t *testing.T) {
 	}
 }
 
-// TestCache_GetSet_WithDefaultTTL tests GetSet using the default TTL.
-func TestCache_GetSet_WithDefaultTTL(t *testing.T) {
+// TestCache_Fetch_WithDefaultTTL tests Fetch using the default TTL.
+func TestCache_Fetch_WithDefaultTTL(t *testing.T) {
 	cache := New[string, int](TTL(time.Hour))
 
-	val, err := cache.GetSet("key1", func() (int, error) {
+	val, err := cache.Fetch("key1", func() (int, error) {
 		return 42, nil
 	})
 	if err != nil {
-		t.Fatalf("GetSet error: %v", err)
+		t.Fatalf("Fetch error: %v", err)
 	}
 	if val != 42 {
-		t.Errorf("GetSet value = %d; want 42", val)
+		t.Errorf("Fetch value = %d; want 42", val)
 	}
 }
 
-// TestCache_GetSet_DoubleCheckPath attempts to hit the double-check cache hit path.
+// TestCache_Fetch_DoubleCheckPath attempts to hit the double-check cache hit path.
 // This path is triggered when:
 // 1. First check misses (no cache hit)
 // 2. We win the singleflight (not loaded)
 // 3. Another call populated the cache before our double-check
 // 4. Double-check finds the value
-func TestCache_GetSet_DoubleCheckPath(t *testing.T) {
+func TestCache_Fetch_DoubleCheckPath(t *testing.T) {
 	var hitCount int
 	for iteration := range 1000 {
 		cache := New[string, int](Size(100))
@@ -770,11 +770,11 @@ func TestCache_GetSet_DoubleCheckPath(t *testing.T) {
 		// Goroutine 1: Will try to win singleflight
 		go func() {
 			defer wg.Done()
-			if _, err := cache.GetSet(key, func() (int, error) {
+			if _, err := cache.Fetch(key, func() (int, error) {
 				loaderCalled.Store(true)
 				return 1, nil
 			}); err != nil {
-				t.Errorf("GetSet error: %v", err)
+				t.Errorf("Fetch error: %v", err)
 			}
 		}()
 
