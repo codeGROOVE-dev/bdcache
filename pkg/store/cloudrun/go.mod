@@ -3,9 +3,9 @@ module github.com/codeGROOVE-dev/fido/pkg/store/cloudrun
 go 1.25.4
 
 require (
-	github.com/codeGROOVE-dev/fido/pkg/store/compress v1.9.0
-	github.com/codeGROOVE-dev/fido/pkg/store/datastore v1.9.0
-	github.com/codeGROOVE-dev/fido/pkg/store/localfs v1.9.0
+	github.com/codeGROOVE-dev/fido/pkg/store/compress v1.10.0
+	github.com/codeGROOVE-dev/fido/pkg/store/datastore v1.10.0
+	github.com/codeGROOVE-dev/fido/pkg/store/localfs v1.10.0
 )
 
 require (
