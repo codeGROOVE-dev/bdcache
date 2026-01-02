@@ -7,7 +7,7 @@ import (
 	"testing"
 	"time"
 
-	"github.com/codeGROOVE-dev/multicache/pkg/store/compress"
+	"github.com/codeGROOVE-dev/fido/pkg/store/compress"
 )
 
 type benchValue struct {

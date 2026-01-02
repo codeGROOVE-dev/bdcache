@@ -1,4 +1,4 @@
-module github.com/codeGROOVE-dev/multicache/pkg/store/compress
+module github.com/codeGROOVE-dev/fido/pkg/store/compress
 
 go 1.25.4
 

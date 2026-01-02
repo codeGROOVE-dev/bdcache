@@ -1,4 +1,4 @@
-module github.com/codeGROOVE-dev/multicache
+module github.com/codeGROOVE-dev/fido
 
 go 1.25.4
 

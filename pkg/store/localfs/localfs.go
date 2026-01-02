@@ -1,4 +1,4 @@
-// Package localfs provides local filesystem persistence for multicache.
+// Package localfs provides local filesystem persistence for fido.
 package localfs
 
 import (
@@ -14,7 +14,7 @@ import (
 	"sync"
 	"time"
 
-	"github.com/codeGROOVE-dev/multicache/pkg/store/compress"
+	"github.com/codeGROOVE-dev/fido/pkg/store/compress"
 )
 
 // Entry represents a cache entry with its metadata for serialization.

@@ -7,7 +7,7 @@ import (
 	"time"
 
 	ds "github.com/codeGROOVE-dev/ds9/pkg/datastore"
-	"github.com/codeGROOVE-dev/multicache/pkg/store/compress"
+	"github.com/codeGROOVE-dev/fido/pkg/store/compress"
 )
 
 // newMockDatastorePersist creates a datastore persistence layer with mock client.

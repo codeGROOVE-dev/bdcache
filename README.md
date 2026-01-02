@@ -1,30 +1,28 @@
 <p align="center">
-  <img src="media/logo-small.png" alt="multicache logo" width="200">
+  <img src="media/logo-small.png" alt="fido logo" width="200">
 </p>
 
-# multicache
+# fido
 
-[![CI](https://github.com/codeGROOVE-dev/multicache/actions/workflows/ci.yml/badge.svg)](https://github.com/codeGROOVE-dev/multicache/actions/workflows/ci.yml)
-[![Go Report Card](https://goreportcard.com/badge/github.com/codeGROOVE-dev/multicache)](https://goreportcard.com/report/github.com/codeGROOVE-dev/multicache)
-[![Go Reference](https://pkg.go.dev/badge/github.com/codeGROOVE-dev/multicache.svg)](https://pkg.go.dev/github.com/codeGROOVE-dev/multicache)
-[![codecov](https://codecov.io/gh/codeGROOVE-dev/multicache/graph/badge.svg)](https://codecov.io/gh/codeGROOVE-dev/multicache)
-[![Release](https://img.shields.io/github/v/release/codeGROOVE-dev/multicache)](https://github.com/codeGROOVE-dev/multicache/releases)
+[![Go Report Card](https://goreportcard.com/badge/github.com/codeGROOVE-dev/fido)](https://goreportcard.com/report/github.com/codeGROOVE-dev/fido)
+[![Go Reference](https://pkg.go.dev/badge/github.com/codeGROOVE-dev/fido.svg)](https://pkg.go.dev/github.com/codeGROOVE-dev/fido)
+[![Release](https://img.shields.io/github/v/release/codeGROOVE-dev/fido)](https://github.com/codeGROOVE-dev/fido/releases)
 [![License](https://img.shields.io/badge/License-Apache_2.0-blue.svg)](https://opensource.org/licenses/Apache-2.0)
 
-multicache is the most well-rounded cache implementation for Go today.
+fido is the most well-rounded cache implementation for Go today.
 
 Designed for real-world applications in unstable environments, it has a higher average hit rate, higher throughput, and lower latency for production workloads than any other cache. To deal with process eviction in environments like Kubernetes, Cloud Run, or Borg, it also offers an optional persistence tier.
 
 ## Install
 
 ```
-go get github.com/codeGROOVE-dev/multicache
+go get github.com/codeGROOVE-dev/fido
 ```
 
 ## Use
 
 ```go
-cache := multicache.New[string, int](multicache.Size(10000))
+cache := fido.New[string, int](fido.Size(10000))
 cache.Set("answer", 42)
 val, ok := cache.Get("answer")
 ```
@@ -33,7 +31,7 @@ With persistence:
 
 ```go
 store, _ := localfs.New[string, User]("myapp", "")
-cache, _ := multicache.NewTiered(store)
+cache, _ := fido.NewTiered(store)
 
 _ = cache.Set(ctx, "user:123", user)       // sync write
 _ = cache.SetAsync(ctx, "user:456", user)  // async write
@@ -50,8 +48,8 @@ user, err := cache.GetSet("user:123", func() (User, error) {
 ## Options
 
 ```go
-multicache.Size(n)           // max entries (default 16384)
-multicache.TTL(time.Hour)    // default expiration
+fido.Size(n)           // max entries (default 16384)
+fido.TTL(time.Hour)    // default expiration
 ```
 
 ## Persistence
@@ -69,9 +67,9 @@ For maximum efficiency, all backends support S2 or Zstd compression via `pkg/sto
 
 ## Performance
 
-multicache has been exhaustively tested for performance using [gocachemark](https://github.com/tstromberg/gocachemark).
+fido has been exhaustively tested for performance using [gocachemark](https://github.com/tstromberg/gocachemark).
 
-Where multicache wins:
+Where fido wins:
 
 - **Throughput**: 551M int gets/sec avg (2.4X faster than otter). 89M string sets/sec avg (27X faster than otter).
 - **Hit rate**: Wins 6 of 9 workloads. Highest average across all datasets (+2.7% vs otter, +0.9% vs sieve).
@@ -88,9 +86,9 @@ Run `make benchmark` for full results, or see [benchmarks/gocachemark_results.md
 
 ## Algorithm
 
-multicache uses [S3-FIFO](https://s3fifo.com/), which features three queues: small (new entries), main (promoted entries), and ghost (recently evicted keys). New items enter small; items accessed twice move to main. The ghost queue tracks evicted keys in a bloom filter to fast-track their return.
+fido uses [S3-FIFO](https://s3fifo.com/), which features three queues: small (new entries), main (promoted entries), and ghost (recently evicted keys). New items enter small; items accessed twice move to main. The ghost queue tracks evicted keys in a bloom filter to fast-track their return.
 
-multicache has been hyper-tuned for high performance, and deviates from the original paper in a handful of ways:
+fido has been hyper-tuned for high performance, and deviates from the original paper in a handful of ways:
 
 - **Tuned small queue** - 13.7% vs paper's 10%, tuned via binary search to maximize average hit rate across 9 production traces
 - **Full ghost frequency restoration** - returning keys restore 100% of their previous access count

@@ -1,5 +1,5 @@
-// Package multicache provides a high-performance cache with optional persistence.
-package multicache
+// Package fido provides a high-performance cache with optional persistence.
+package fido
 
 import (
 	"sync"

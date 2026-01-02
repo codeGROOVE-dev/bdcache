@@ -8,13 +8,13 @@ import (
 	"os"
 	"time"
 
-	"github.com/codeGROOVE-dev/multicache/pkg/store/compress"
-	"github.com/codeGROOVE-dev/multicache/pkg/store/datastore"
-	"github.com/codeGROOVE-dev/multicache/pkg/store/localfs"
+	"github.com/codeGROOVE-dev/fido/pkg/store/compress"
+	"github.com/codeGROOVE-dev/fido/pkg/store/datastore"
+	"github.com/codeGROOVE-dev/fido/pkg/store/localfs"
 )
 
 // Store is the persistence interface returned by New.
-// Matches multicache.Store so callers can pass it to multicache.NewTiered.
+// Matches fido.Store so callers can pass it to fido.NewTiered.
 type Store[K comparable, V any] interface {
 	ValidateKey(key K) error
 	Get(ctx context.Context, key K) (V, time.Time, bool, error)

@@ -1,6 +1,6 @@
 //go:build !race
 
-package multicache
+package fido
 
 import (
 	"sync"

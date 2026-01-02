@@ -1,4 +1,4 @@
-// Package valkey provides Valkey/Redis persistence for multicache.
+// Package valkey provides Valkey/Redis persistence for fido.
 package valkey
 
 import (
@@ -8,7 +8,7 @@ import (
 	"fmt"
 	"time"
 
-	"github.com/codeGROOVE-dev/multicache/pkg/store/compress"
+	"github.com/codeGROOVE-dev/fido/pkg/store/compress"
 	"github.com/valkey-io/valkey-go"
 )
 

@@ -1,4 +1,4 @@
-// Package compress provides compression algorithms for multicache persistence stores.
+// Package compress provides compression algorithms for fido persistence stores.
 package compress
 
 import (

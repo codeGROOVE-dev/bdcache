@@ -9,13 +9,13 @@ tag:
 	fi
 	@echo "=== Releasing $(VERSION) ==="
 	@echo ""
-	@echo "Step 1: Update submodule go.mod files to require multicache $(VERSION)..."
-	@find . -path ./go.mod -prune -o -name go.mod -print | xargs -I{} sed -i '' 's|github.com/codeGROOVE-dev/multicache v[^ ]*|github.com/codeGROOVE-dev/multicache $(VERSION)|' {}
+	@echo "Step 1: Update submodule go.mod files to require fido $(VERSION)..."
+	@find . -path ./go.mod -prune -o -name go.mod -print | xargs -I{} sed -i '' 's|github.com/codeGROOVE-dev/fido v[^ ]*|github.com/codeGROOVE-dev/fido $(VERSION)|' {}
 	@# Update store submodule dependencies (compress must be first as others depend on it)
-	@find . -path ./go.mod -prune -o -name go.mod -print | xargs -I{} sed -i '' 's|github.com/codeGROOVE-dev/multicache/pkg/store/compress v[^ ]*|github.com/codeGROOVE-dev/multicache/pkg/store/compress $(VERSION)|' {}
-	@find . -path ./go.mod -prune -o -name go.mod -print | xargs -I{} sed -i '' 's|github.com/codeGROOVE-dev/multicache/pkg/store/localfs v[^ ]*|github.com/codeGROOVE-dev/multicache/pkg/store/localfs $(VERSION)|' {}
-	@find . -path ./go.mod -prune -o -name go.mod -print | xargs -I{} sed -i '' 's|github.com/codeGROOVE-dev/multicache/pkg/store/datastore v[^ ]*|github.com/codeGROOVE-dev/multicache/pkg/store/datastore $(VERSION)|' {}
-	@find . -path ./go.mod -prune -o -name go.mod -print | xargs -I{} sed -i '' 's|github.com/codeGROOVE-dev/multicache/pkg/store/valkey v[^ ]*|github.com/codeGROOVE-dev/multicache/pkg/store/valkey $(VERSION)|' {}
+	@find . -path ./go.mod -prune -o -name go.mod -print | xargs -I{} sed -i '' 's|github.com/codeGROOVE-dev/fido/pkg/store/compress v[^ ]*|github.com/codeGROOVE-dev/fido/pkg/store/compress $(VERSION)|' {}
+	@find . -path ./go.mod -prune -o -name go.mod -print | xargs -I{} sed -i '' 's|github.com/codeGROOVE-dev/fido/pkg/store/localfs v[^ ]*|github.com/codeGROOVE-dev/fido/pkg/store/localfs $(VERSION)|' {}
+	@find . -path ./go.mod -prune -o -name go.mod -print | xargs -I{} sed -i '' 's|github.com/codeGROOVE-dev/fido/pkg/store/datastore v[^ ]*|github.com/codeGROOVE-dev/fido/pkg/store/datastore $(VERSION)|' {}
+	@find . -path ./go.mod -prune -o -name go.mod -print | xargs -I{} sed -i '' 's|github.com/codeGROOVE-dev/fido/pkg/store/valkey v[^ ]*|github.com/codeGROOVE-dev/fido/pkg/store/valkey $(VERSION)|' {}
 	@echo ""
 	@echo "Step 2: Commit go.mod changes..."
 	@git add -A

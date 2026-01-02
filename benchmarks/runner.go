@@ -4,7 +4,7 @@
 //
 // Usage:
 //
-//	go run benchmarks/runner.go                  # solo multicache, validate hitrate
+//	go run benchmarks/runner.go                  # solo fido, validate hitrate
 //	go run benchmarks/runner.go -competitive    # gold medalists, track rankings
 //
 // Environment variables:
@@ -53,7 +53,7 @@ var hitRateKeys = map[string]string{
 }
 
 // goldMedalists are the caches to compare in competitive mode.
-var goldMedalists = "multicache,otter,clock,theine,sieve,freelru-sync"
+var goldMedalists = "fido,otter,clock,theine,sieve,freelru-sync"
 
 // suiteGoals are the minimum/maximum acceptable averages across all tests in each suite.
 // Note: latency and throughput absolute values are hardware-dependent and validated via
@@ -71,29 +71,29 @@ var suiteGoals = struct {
 }
 
 const (
-	minMulticacheScore = 154
-	gocachemarkRepo    = "github.com/tstromberg/gocachemark"
-	multicacheModule   = "github.com/codeGROOVE-dev/multicache"
+	minFidoScore    = 154
+	gocachemarkRepo = "github.com/tstromberg/gocachemark"
+	fidoModule      = "github.com/codeGROOVE-dev/fido"
 )
 
 func main() {
 	competitive := flag.Bool("competitive", false, "Run competitive benchmark with gold medalists")
 	flag.Parse()
 
-	// Find multicache root (where we're running from).
-	multicacheDir, err := findMulticacheDir()
+	// Find fido root (where we're running from).
+	fidoDir, err := findFidoDir()
 	if err != nil {
-		fatal("finding multicache directory: %v", err)
+		fatal("finding fido directory: %v", err)
 	}
 
 	// Find or clone gocachemark.
-	gocachemarkDir, err := findOrCloneGocachemark(multicacheDir)
+	gocachemarkDir, err := findOrCloneGocachemark(fidoDir)
 	if err != nil {
 		fatal("finding gocachemark: %v", err)
 	}
 
 	// Update go.mod replace directive.
-	cmd := exec.Command("go", "mod", "edit", "-replace", multicacheModule+"="+multicacheDir)
+	cmd := exec.Command("go", "mod", "edit", "-replace", fidoModule+"="+fidoDir)
 	cmd.Dir = gocachemarkDir
 	cmd.Stderr = os.Stderr
 	if err := cmd.Run(); err != nil {
@@ -101,7 +101,7 @@ func main() {
 	}
 
 	// Prepare output directory for results.
-	benchmarksDir := filepath.Join(multicacheDir, "benchmarks")
+	benchmarksDir := filepath.Join(fidoDir, "benchmarks")
 
 	// Load reference results for comparison.
 	ref, _ := loadResults(filepath.Join(benchmarksDir, "gocachemark_results.json"))
@@ -111,7 +111,7 @@ func main() {
 	if *competitive {
 		args = append(args, "-caches", goldMedalists)
 	} else {
-		args = append(args, "-caches", "multicache")
+		args = append(args, "-caches", "fido")
 	}
 
 	// Always use temp directory for output first.
@@ -140,7 +140,7 @@ func main() {
 	fullRun := testsFilter == "" && suitesFilter == "" && sizesFilter == ""
 
 	// Run gocachemark with streaming output.
-	mode := "multicache"
+	mode := "fido"
 	if *competitive {
 		mode = "competitive"
 	}
@@ -179,8 +179,8 @@ func main() {
 	}
 }
 
-func findMulticacheDir() (string, error) {
-	// Look for go.mod with multicache module.
+func findFidoDir() (string, error) {
+	// Look for go.mod with fido module.
 	dir, err := os.Getwd()
 	if err != nil {
 		return "", err
@@ -189,7 +189,7 @@ func findMulticacheDir() (string, error) {
 	for {
 		modPath := filepath.Join(dir, "go.mod")
 		if data, err := os.ReadFile(modPath); err == nil {
-			if strings.Contains(string(data), multicacheModule) {
+			if strings.Contains(string(data), fidoModule) {
 				return dir, nil
 			}
 		}
@@ -201,15 +201,15 @@ func findMulticacheDir() (string, error) {
 		dir = parent
 	}
 
-	return "", fmt.Errorf("could not find multicache root (no go.mod with %s)", multicacheModule)
+	return "", fmt.Errorf("could not find fido root (no go.mod with %s)", fidoModule)
 }
 
-func findOrCloneGocachemark(multicacheDir string) (string, error) {
+func findOrCloneGocachemark(fidoDir string) (string, error) {
 	// Check locations in order of preference.
 	locations := []string{
 		os.Getenv("GOCACHEMARK_DIR"),
 		filepath.Join(os.Getenv("HOME"), "src", "gocachemark"),
-		filepath.Join(multicacheDir, "out", "gocachemark"),
+		filepath.Join(fidoDir, "out", "gocachemark"),
 	}
 
 	for _, loc := range locations {
@@ -222,7 +222,7 @@ func findOrCloneGocachemark(multicacheDir string) (string, error) {
 	}
 
 	// Clone to out/gocachemark.
-	cloneDir := filepath.Join(multicacheDir, "out", "gocachemark")
+	cloneDir := filepath.Join(fidoDir, "out", "gocachemark")
 	fmt.Printf("Cloning gocachemark to %s...\n", cloneDir)
 
 	if err := os.MkdirAll(filepath.Dir(cloneDir), 0755); err != nil {
@@ -389,14 +389,14 @@ func validateHitrate(res *Results) error {
 		var avg float64
 		var found bool
 		for _, c := range caches {
-			if c.Name == "multicache" {
+			if c.Name == "fido" {
 				avg = c.AvgRate
 				found = true
 				break
 			}
 		}
 		if !found {
-			fmt.Printf("? %s: multicache not found\n", name)
+			fmt.Printf("? %s: fido not found\n", name)
 			continue
 		}
 
@@ -430,7 +430,7 @@ func validateSuiteGoals(res *Results) error {
 		if err != nil {
 			continue
 		}
-		if rate := findHitRate(caches, "multicache"); rate > 0 {
+		if rate := findHitRate(caches, "fido"); rate > 0 {
 			hitRates = append(hitRates, rate)
 		}
 	}
@@ -449,7 +449,7 @@ func validateSuiteGoals(res *Results) error {
 
 	// Memory.
 	if res.Memory != nil {
-		if bytes := findMemory(res.Memory.Results, "multicache"); bytes > 0 {
+		if bytes := findMemory(res.Memory.Results, "fido"); bytes > 0 {
 			if bytes <= suiteGoals.maxMemory {
 				fmt.Printf("✓ memory: %d bytes/item (goal: ≤%d)\n", bytes, suiteGoals.maxMemory)
 			} else {
@@ -490,8 +490,8 @@ func showDeltas(ref, curr *Results) {
 		if err != nil {
 			continue
 		}
-		refVal := findHitRate(refCaches, "multicache")
-		currVal := findHitRate(currCaches, "multicache")
+		refVal := findHitRate(refCaches, "fido")
+		currVal := findHitRate(currCaches, "fido")
 		if refVal == 0 {
 			continue
 		}
@@ -510,8 +510,8 @@ func showDeltas(ref, curr *Results) {
 		if raw, ok := curr.Latency[name]; ok {
 			json.Unmarshal(raw, &currResults)
 		}
-		refVal := findLatency(refResults, "multicache")
-		currVal := findLatency(currResults, "multicache")
+		refVal := findLatency(refResults, "fido")
+		currVal := findLatency(currResults, "fido")
 		if refVal == 0 {
 			continue
 		}
@@ -534,8 +534,8 @@ func showDeltas(ref, curr *Results) {
 		if raw, ok := curr.Throughput[name]; ok {
 			json.Unmarshal(raw, &currResults)
 		}
-		refVal := findThroughput(refResults, "multicache")
-		currVal := findThroughput(currResults, "multicache")
+		refVal := findThroughput(refResults, "fido")
+		currVal := findThroughput(currResults, "fido")
 		if refVal == 0 {
 			continue
 		}
@@ -547,8 +547,8 @@ func showDeltas(ref, curr *Results) {
 
 	// Memory delta (lower is better).
 	if ref.Memory != nil && curr.Memory != nil {
-		refVal := findMemory(ref.Memory.Results, "multicache")
-		currVal := findMemory(curr.Memory.Results, "multicache")
+		refVal := findMemory(ref.Memory.Results, "fido")
+		currVal := findMemory(curr.Memory.Results, "fido")
 		if refVal > 0 && currVal > 0 {
 			delta := currVal - refVal
 			pct := float64(delta) / float64(refVal) * 100
@@ -600,16 +600,16 @@ func findMemory(results []MemoryEntry, name string) int {
 }
 
 func validateCompetitive(res, prev *Results, testsFilter, suitesFilter string) error {
-	// Find multicache in rankings.
+	// Find fido in rankings.
 	var mc *RankEntry
 	for i := range res.Rankings {
-		if res.Rankings[i].Name == "multicache" {
+		if res.Rankings[i].Name == "fido" {
 			mc = &res.Rankings[i]
 			break
 		}
 	}
 	if mc == nil {
-		return fmt.Errorf("multicache not found in rankings")
+		return fmt.Errorf("fido not found in rankings")
 	}
 
 	if prev != nil {
@@ -641,17 +641,17 @@ func validateCompetitive(res, prev *Results, testsFilter, suitesFilter string) e
 	if fullRun {
 		fmt.Println("\n=== Final Validation ===")
 		headerPrinted = true
-		if mc.Score >= minMulticacheScore {
-			fmt.Printf("✓ multicache score: %d (goal: ≥%d)\n", mc.Score, minMulticacheScore)
+		if mc.Score >= minFidoScore {
+			fmt.Printf("✓ fido score: %d (goal: ≥%d)\n", mc.Score, minFidoScore)
 		} else {
-			fmt.Printf("✗ multicache score: %d (goal: ≥%d)\n", mc.Score, minMulticacheScore)
-			fails = append(fails, fmt.Sprintf("score %d < %d", mc.Score, minMulticacheScore))
+			fmt.Printf("✗ fido score: %d (goal: ≥%d)\n", mc.Score, minFidoScore)
+			fails = append(fails, fmt.Sprintf("score %d < %d", mc.Score, minFidoScore))
 		}
 
 		if prev != nil {
 			var prevScore int
 			for _, r := range prev.Rankings {
-				if r.Name == "multicache" {
+				if r.Name == "fido" {
 					prevScore = r.Score
 					break
 				}
@@ -683,7 +683,7 @@ func validateCompetitive(res, prev *Results, testsFilter, suitesFilter string) e
 		}
 
 		for _, r := range cat.Rankings {
-			if r.Name == "multicache" {
+			if r.Name == "fido" {
 				if !headerPrinted {
 					fmt.Println("\n=== Final Validation ===")
 					headerPrinted = true
