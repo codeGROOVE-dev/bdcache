@@ -6,6 +6,12 @@
 //
 //	go run benchmarks/runner.go                  # solo multicache, validate hitrate
 //	go run benchmarks/runner.go -competitive    # gold medalists, track rankings
+//
+// Environment variables:
+//
+//	TESTS=cdn,meta        # filter to specific tests
+//	SUITES=hitrate        # filter to specific suites
+//	SIZES=16,32           # filter to specific cache sizes (in thousands)
 package main
 
 import (
@@ -119,15 +125,19 @@ func main() {
 	// Add filters if env vars are set.
 	testsFilter := os.Getenv("TESTS")
 	suitesFilter := os.Getenv("SUITES")
+	sizesFilter := os.Getenv("SIZES")
 	if testsFilter != "" {
 		args = append(args, "-tests", testsFilter)
 	}
 	if suitesFilter != "" {
 		args = append(args, "-suites", suitesFilter)
 	}
+	if sizesFilter != "" {
+		args = append(args, "-sizes", sizesFilter)
+	}
 
 	// Track whether this is a full run (no filters).
-	fullRun := testsFilter == "" && suitesFilter == ""
+	fullRun := testsFilter == "" && suitesFilter == "" && sizesFilter == ""
 
 	// Run gocachemark with streaming output.
 	mode := "multicache"
@@ -164,7 +174,7 @@ func main() {
 			}
 			fmt.Printf("\nResults saved to %s/\n", benchmarksDir)
 		} else {
-			fmt.Printf("\nResults NOT saved (filtered run: TESTS=%q SUITES=%q)\n", testsFilter, suitesFilter)
+			fmt.Printf("\nResults NOT saved (filtered run: TESTS=%q SUITES=%q SIZES=%q)\n", testsFilter, suitesFilter, sizesFilter)
 		}
 	}
 }

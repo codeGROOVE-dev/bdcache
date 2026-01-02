@@ -57,16 +57,8 @@ const (
 	// maxPeakFreq caps peakFreq for death row admission decisions.
 	maxPeakFreq = 21
 
-	// smallQueueRatio is the small queue size as per-mille of shard capacity.
-	// 13.7% tuned via binary search (61.574% vs 59.40% at 90%).
-	smallQueueRatio = 137 // per-mille
-
 	// ghostFPRate is the bloom filter false positive rate for ghost tracking.
 	ghostFPRate = 0.00001
-
-	// ghostCapPerMille is ghost queue capacity as per-mille of cache size.
-	// 1.22x tuned via binary search (61.620% vs 61.574% at 0.75x).
-	ghostCapPerMille = 1220 // per-mille
 
 	// deathRowThresholdPerMille scales the death row admission threshold.
 	// 1000 = average peakFreq. Wide plateau from 10-1500 (all ~61.62%).
@@ -76,6 +68,109 @@ const (
 	// Death row size scales with capacity to match pre-sharding behavior.
 	minDeathRowSize = 8
 )
+
+// smallSize returns the small queue capacity for a given cache capacity.
+// Tuned via binary search across cache sizes (hitrate benchmarks):
+//
+//	  8K: 148 (14.8%) - small caches need aggressive filtering
+//	 16K: 123 (12.3%)
+//	 32K: 137 (13.7%)
+//	 64K: 132 (13.2%)
+//	128K: 122 (12.2%) - minimum ratio
+//	256K: 152 (15.2%) - large caches need more filtering again
+//
+// Uses piecewise linear interpolation between measured points.
+func smallSize(capacity int) int {
+	if capacity <= 0 {
+		return 0
+	}
+	return capacity * smallRatio(capacity) / 1000
+}
+
+// smallRatio returns the optimal small queue ratio (per-mille) for a capacity.
+func smallRatio(capacity int) int {
+	// Tuning points from binary search (capacity -> ratio per-mille).
+	// Interpolate linearly between points.
+	type point struct{ cap, ratio int }
+	points := [...]point{
+		{8000, 148},
+		{16000, 123},
+		{32000, 137},
+		{64000, 132},
+		{128000, 122},
+		{256000, 152},
+	}
+
+	// Clamp to bounds.
+	if capacity <= points[0].cap {
+		return points[0].ratio
+	}
+	if capacity >= points[len(points)-1].cap {
+		return points[len(points)-1].ratio
+	}
+
+	// Find segment and interpolate.
+	for i := 1; i < len(points); i++ {
+		if capacity <= points[i].cap {
+			p0, p1 := points[i-1], points[i]
+			// Linear interpolation: ratio = r0 + (r1-r0) * (cap-c0) / (c1-c0)
+			return p0.ratio + (p1.ratio-p0.ratio)*(capacity-p0.cap)/(p1.cap-p0.cap)
+		}
+	}
+	return points[len(points)-1].ratio
+}
+
+// ghostSize returns the ghost queue capacity for a given cache capacity.
+// Tuned via binary search across cache sizes (hitrate benchmarks):
+//
+//	  8K:  875 ( 88%) - smaller caches need less ghost tracking
+//	 16K: 1000 (100%)
+//	 32K: 1200 (120%)
+//	 64K: 1750 (175%)
+//	128K: 2075 (208%)
+//	256K: 2225 (223%) - larger caches benefit from more ghost tracking
+//
+// Monotonic increase: larger caches have more unique keys cycling through,
+// so they need proportionally larger ghost queues to track evictions.
+func ghostSize(capacity int) int {
+	if capacity <= 0 {
+		return 0
+	}
+	return capacity * ghostRatio(capacity) / 1000
+}
+
+// ghostRatio returns the optimal ghost queue ratio (per-mille) for a capacity.
+func ghostRatio(capacity int) int {
+	// Tuning points from binary search (capacity -> ratio per-mille).
+	// Interpolate linearly between points.
+	type point struct{ cap, ratio int }
+	points := [...]point{
+		{8000, 875},
+		{16000, 1000},
+		{32000, 1200},
+		{64000, 1750},
+		{128000, 2075},
+		{256000, 2225},
+	}
+
+	// Clamp to bounds.
+	if capacity <= points[0].cap {
+		return points[0].ratio
+	}
+	if capacity >= points[len(points)-1].cap {
+		return points[len(points)-1].ratio
+	}
+
+	// Find segment and interpolate.
+	for i := 1; i < len(points); i++ {
+		if capacity <= points[i].cap {
+			p0, p1 := points[i-1], points[i]
+			// Linear interpolation: ratio = r0 + (r1-r0) * (cap-c0) / (c1-c0)
+			return p0.ratio + (p1.ratio-p0.ratio)*(capacity-p0.cap)/(p1.cap-p0.cap)
+		}
+	}
+	return points[len(points)-1].ratio
+}
 
 // s3fifo implements the S3-FIFO cache eviction algorithm.
 // See "FIFO queues are all you need for cache eviction" (SOSP'23).
@@ -342,8 +437,8 @@ func newS3FIFO[K comparable, V any](cfg *config) *s3fifo[K, V] {
 		mu:          xsync.NewRBMutex(),
 		entries:     xsync.NewMap[K, *entry[K, V]](xsync.WithPresize(size)),
 		capacity:    size,
-		smallThresh: size * smallQueueRatio / 1000,
-		ghostCap:    size * ghostCapPerMille / 1000,
+		smallThresh: smallSize(size),
+		ghostCap:    ghostSize(size),
 		ghostActive: newBloomFilter(size, ghostFPRate),
 		ghostAging:  newBloomFilter(size, ghostFPRate),
 		deathRow:    make([]*entry[K, V], deathRowSize),

@@ -788,8 +788,8 @@ func TestS3FIFO_GhostQueueSize(t *testing.T) {
 	capacity := 1000
 	cache := newS3FIFO[int, int](&config{size: capacity})
 
-	// Ghost capacity should be 0.75x cache capacity (tuned via binary search)
-	want := capacity * ghostCapPerMille / 1000
+	// Ghost capacity varies by cache size (see ghostSize function).
+	want := ghostSize(capacity)
 	if cache.ghostCap != want {
 		t.Errorf("ghost capacity = %d; want %d", cache.ghostCap, want)
 	}
@@ -2803,3 +2803,157 @@ func TestEntry_Seqlock_StringValue(t *testing.T) {
 
 // Concurrent seqlock tests are in s3fifo_seqlock_race_test.go
 // They are skipped under race detector because seqlocks are benign races.
+
+// TestSmallRatio verifies the small queue ratio at tuning points.
+// Values determined via binary search on hitrate benchmarks.
+func TestSmallRatio(t *testing.T) {
+	tests := []struct {
+		capacity int
+		want     int // expected ratio per-mille
+	}{
+		// Tuning points from binary search.
+		{8000, 148},
+		{16000, 123},
+		{32000, 137},
+		{64000, 132},
+		{128000, 122},
+		{256000, 152},
+		// Boundary cases.
+		{0, 148},      // <= min returns min ratio
+		{4000, 148},   // below min clamps to 148
+		{512000, 152}, // above max clamps to 152
+	}
+
+	for _, tt := range tests {
+		got := smallRatio(tt.capacity)
+		if got != tt.want {
+			t.Errorf("smallRatio(%d) = %d; want %d", tt.capacity, got, tt.want)
+		}
+	}
+}
+
+// TestSmallRatio_Interpolation verifies linear interpolation between points.
+func TestSmallRatio_Interpolation(t *testing.T) {
+	tests := []struct {
+		capacity int
+		min, max int // expected range (inclusive)
+	}{
+		// Midpoint between 8K (148) and 16K (123) should be ~135.
+		{12000, 130, 140},
+		// Midpoint between 16K (123) and 32K (137) should be ~130.
+		{24000, 128, 132},
+		// Midpoint between 128K (122) and 256K (152) should be ~137.
+		{192000, 135, 140},
+	}
+
+	for _, tt := range tests {
+		got := smallRatio(tt.capacity)
+		if got < tt.min || got > tt.max {
+			t.Errorf("smallRatio(%d) = %d; want [%d, %d]", tt.capacity, got, tt.min, tt.max)
+		}
+	}
+}
+
+// TestSmallSize verifies the actual small queue size calculation.
+func TestSmallSize(t *testing.T) {
+	tests := []struct {
+		capacity int
+		want     int // expected small queue size
+	}{
+		{0, 0},
+		{8000, 8000 * 148 / 1000},     // 1184
+		{16000, 16000 * 123 / 1000},   // 1968
+		{128000, 128000 * 122 / 1000}, // 15616
+	}
+
+	for _, tt := range tests {
+		got := smallSize(tt.capacity)
+		if got != tt.want {
+			t.Errorf("smallSize(%d) = %d; want %d", tt.capacity, got, tt.want)
+		}
+	}
+}
+
+// TestGhostRatio verifies the ghost queue ratio at tuning points.
+// Values determined via binary search on hitrate benchmarks.
+func TestGhostRatio(t *testing.T) {
+	tests := []struct {
+		capacity int
+		want     int // expected ratio per-mille
+	}{
+		// Tuning points from binary search.
+		{8000, 875},
+		{16000, 1000},
+		{32000, 1200},
+		{64000, 1750},
+		{128000, 2075},
+		{256000, 2225},
+		// Boundary cases.
+		{0, 875},       // <= min returns min ratio
+		{4000, 875},    // below min clamps to 875
+		{512000, 2225}, // above max clamps to 2225
+	}
+
+	for _, tt := range tests {
+		got := ghostRatio(tt.capacity)
+		if got != tt.want {
+			t.Errorf("ghostRatio(%d) = %d; want %d", tt.capacity, got, tt.want)
+		}
+	}
+}
+
+// TestGhostRatio_Interpolation verifies linear interpolation between points.
+func TestGhostRatio_Interpolation(t *testing.T) {
+	tests := []struct {
+		capacity int
+		min, max int // expected range (inclusive)
+	}{
+		// Midpoint between 8K (875) and 16K (1000) should be ~937.
+		{12000, 930, 945},
+		// Midpoint between 32K (1200) and 64K (1750) should be ~1475.
+		{48000, 1450, 1500},
+		// Midpoint between 128K (2075) and 256K (2225) should be ~2150.
+		{192000, 2140, 2160},
+	}
+
+	for _, tt := range tests {
+		got := ghostRatio(tt.capacity)
+		if got < tt.min || got > tt.max {
+			t.Errorf("ghostRatio(%d) = %d; want [%d, %d]", tt.capacity, got, tt.min, tt.max)
+		}
+	}
+}
+
+// TestGhostRatio_Monotonic verifies the ratio increases with capacity.
+func TestGhostRatio_Monotonic(t *testing.T) {
+	capacities := []int{8000, 16000, 32000, 64000, 128000, 256000}
+	prev := 0
+	for _, cap := range capacities {
+		got := ghostRatio(cap)
+		if got < prev {
+			t.Errorf("ghostRatio(%d) = %d; should be >= %d (monotonic)", cap, got, prev)
+		}
+		prev = got
+	}
+}
+
+// TestGhostSize verifies the actual ghost queue size calculation.
+func TestGhostSize(t *testing.T) {
+	tests := []struct {
+		capacity int
+		want     int // expected ghost queue size
+	}{
+		{0, 0},
+		{8000, 8000 * 875 / 1000},      // 7000
+		{16000, 16000 * 1000 / 1000},   // 16000
+		{32000, 32000 * 1200 / 1000},   // 38400
+		{128000, 128000 * 2075 / 1000}, // 265600
+	}
+
+	for _, tt := range tests {
+		got := ghostSize(tt.capacity)
+		if got != tt.want {
+			t.Errorf("ghostSize(%d) = %d; want %d", tt.capacity, got, tt.want)
+		}
+	}
+}
