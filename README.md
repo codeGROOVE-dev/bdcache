@@ -1,17 +1,16 @@
-<p align="center">
-  <img src="media/logo-small.png" alt="fido logo" width="200">
-</p>
 
-# fido
+# Fido
 
 [![Go Report Card](https://goreportcard.com/badge/github.com/codeGROOVE-dev/fido)](https://goreportcard.com/report/github.com/codeGROOVE-dev/fido)
 [![Go Reference](https://pkg.go.dev/badge/github.com/codeGROOVE-dev/fido.svg)](https://pkg.go.dev/github.com/codeGROOVE-dev/fido)
 [![Release](https://img.shields.io/github/v/release/codeGROOVE-dev/fido)](https://github.com/codeGROOVE-dev/fido/releases)
 [![License](https://img.shields.io/badge/License-Apache_2.0-blue.svg)](https://opensource.org/licenses/Apache-2.0)
 
-fido is the most well-rounded cache implementation for Go today.
+<img src="media/logo-small.png" alt="fido logo" width="200">
 
-Designed for real-world applications in unstable environments, it has a higher average hit rate, higher throughput, and lower latency for production workloads than any other cache. To deal with process eviction in environments like Kubernetes, Cloud Run, or Borg, it also offers an optional persistence tier.
+fido is a high-performance cache for Go, focusing on high hit-rates, high throughput, and low latency. Optimized using the best algorithms and lock-free data structures, nobody fetches better than Fido. Designed to thrive in unstable environments like Kubernetes, Cloud Run, or Borg, it also features an optional multi-tier persistence architecture.
+
+As of January 2026, nobody fetches better - and we have the benchmarks to prove it.
 
 ## Install
 
@@ -22,19 +21,19 @@ go get github.com/codeGROOVE-dev/fido
 ## Use
 
 ```go
-cache := fido.New[string, int](fido.Size(10000))
-cache.Set("answer", 42)
-val, ok := cache.Get("answer")
+c := fido.New[string, int](fido.Size(10000))
+c.Set("answer", 42)
+val, ok := c.Get("answer")
 ```
 
 With persistence:
 
 ```go
-store, _ := localfs.New[string, User]("myapp", "")
-cache, _ := fido.NewTiered(store)
+store, err := localfs.New[string, User]("myapp", "")
+cache, err := fido.NewTiered(store)
 
-_ = cache.Set(ctx, "user:123", user)       // sync write
-_ = cache.SetAsync(ctx, "user:456", user)  // async write
+err = cache.Set(ctx, "user:123", user)       // sync write
+err = cache.SetAsync(ctx, "user:456", user)  // async write
 ```
 
 GetSet deduplicates concurrent loads to prevent thundering herd situations:
