@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"maps"
 	"os"
 	"path/filepath"
 	"strings"
@@ -1206,6 +1207,232 @@ func TestFilePersist_Compression_IsolatedNamespaces(t *testing.T) {
 	locS2 := fpS2.Location("key")
 	if locNone == locS2 {
 		t.Error("different compression should result in different file paths")
+	}
+}
+
+func TestFilePersist_Keys(t *testing.T) {
+	dir := t.TempDir()
+	fp, err := New[string, string]("test", dir)
+	if err != nil {
+		t.Fatalf("New: %v", err)
+	}
+	defer func() {
+		if err := fp.Close(); err != nil {
+			t.Logf("Close error: %v", err)
+		}
+	}()
+
+	ctx := context.Background()
+
+	// Set entries with different prefixes
+	entries := map[string]string{
+		"user:alice":   "alice-data",
+		"user:bob":     "bob-data",
+		"user:charlie": "charlie-data",
+		"post:1":       "post-1-data",
+		"post:2":       "post-2-data",
+		"other":        "other-data",
+	}
+
+	for k, v := range entries {
+		if err := fp.Set(ctx, k, v, time.Time{}); err != nil {
+			t.Fatalf("Set %s: %v", k, err)
+		}
+	}
+
+	tests := []struct {
+		name   string
+		prefix string
+		want   []string
+	}{
+		{"user prefix", "user:", []string{"user:alice", "user:bob", "user:charlie"}},
+		{"post prefix", "post:", []string{"post:1", "post:2"}},
+		{"other prefix", "other", []string{"other"}},
+		{"no match", "nomatch:", []string{}},
+		{"empty prefix", "", []string{"other", "post:1", "post:2", "user:alice", "user:bob", "user:charlie"}},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			var keys []string
+			for k := range fp.Keys(ctx, tt.prefix) {
+				keys = append(keys, k)
+			}
+
+			if len(keys) != len(tt.want) {
+				t.Errorf("Keys() returned %d keys; want %d. Got: %v, Want: %v", len(keys), len(tt.want), keys, tt.want)
+				return
+			}
+
+			// Sort for comparison
+			keyMap := make(map[string]bool)
+			for _, k := range keys {
+				keyMap[k] = true
+			}
+
+			for _, wantKey := range tt.want {
+				if !keyMap[wantKey] {
+					t.Errorf("Keys() missing key %q", wantKey)
+				}
+			}
+		})
+	}
+}
+
+func TestFilePersist_Range(t *testing.T) {
+	dir := t.TempDir()
+	fp, err := New[string, string]("test", dir)
+	if err != nil {
+		t.Fatalf("New: %v", err)
+	}
+	defer func() {
+		if err := fp.Close(); err != nil {
+			t.Logf("Close error: %v", err)
+		}
+	}()
+
+	ctx := context.Background()
+
+	// Set entries with different prefixes
+	entries := map[string]string{
+		"user:alice":   "alice-data",
+		"user:bob":     "bob-data",
+		"user:charlie": "charlie-data",
+		"post:1":       "post-1-data",
+		"post:2":       "post-2-data",
+		"other":        "other-data",
+	}
+
+	for k, v := range entries {
+		if err := fp.Set(ctx, k, v, time.Time{}); err != nil {
+			t.Fatalf("Set %s: %v", k, err)
+		}
+	}
+
+	tests := []struct {
+		name   string
+		prefix string
+		want   map[string]string
+	}{
+		{"user prefix", "user:", map[string]string{
+			"user:alice":   "alice-data",
+			"user:bob":     "bob-data",
+			"user:charlie": "charlie-data",
+		}},
+		{"post prefix", "post:", map[string]string{
+			"post:1": "post-1-data",
+			"post:2": "post-2-data",
+		}},
+		{"other prefix", "other", map[string]string{
+			"other": "other-data",
+		}},
+		{"no match", "nomatch:", map[string]string{}},
+		{"empty prefix", "", entries},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			result := maps.Collect(fp.Range(ctx, tt.prefix))
+
+			if len(result) != len(tt.want) {
+				t.Errorf("Range() returned %d entries; want %d", len(result), len(tt.want))
+				return
+			}
+
+			for k, wantVal := range tt.want {
+				gotVal, found := result[k]
+				if !found {
+					t.Errorf("Range() missing key %q", k)
+					continue
+				}
+				if gotVal != wantVal {
+					t.Errorf("Range() key %q = %q; want %q", k, gotVal, wantVal)
+				}
+			}
+		})
+	}
+}
+
+func TestFilePersist_Range_SkipsExpired(t *testing.T) {
+	dir := t.TempDir()
+	fp, err := New[string, string]("test", dir)
+	if err != nil {
+		t.Fatalf("New: %v", err)
+	}
+	defer func() {
+		if err := fp.Close(); err != nil {
+			t.Logf("Close error: %v", err)
+		}
+	}()
+
+	ctx := context.Background()
+
+	// Set entries with different expiry times
+	past := time.Now().Add(-1 * time.Hour)
+	future := time.Now().Add(1 * time.Hour)
+
+	if err := fp.Set(ctx, "expired-1", "value1", past); err != nil {
+		t.Fatalf("Set: %v", err)
+	}
+	if err := fp.Set(ctx, "valid-1", "value2", future); err != nil {
+		t.Fatalf("Set: %v", err)
+	}
+	if err := fp.Set(ctx, "valid-2", "value3", time.Time{}); err != nil {
+		t.Fatalf("Set: %v", err)
+	}
+
+	// Range should only return valid entries
+	result := maps.Collect(fp.Range(ctx, ""))
+
+	if len(result) != 2 {
+		t.Errorf("Range() returned %d entries; want 2 (expired entries should be skipped)", len(result))
+	}
+
+	if _, found := result["expired-1"]; found {
+		t.Error("Range() should skip expired entries")
+	}
+
+	if val, found := result["valid-1"]; !found || val != "value2" {
+		t.Error("Range() should return valid-1")
+	}
+
+	if val, found := result["valid-2"]; !found || val != "value3" {
+		t.Error("Range() should return valid-2")
+	}
+}
+
+func TestFilePersist_Keys_ContextCancellation(t *testing.T) {
+	dir := t.TempDir()
+	fp, err := New[string, int]("test", dir)
+	if err != nil {
+		t.Fatalf("New: %v", err)
+	}
+	defer func() {
+		if err := fp.Close(); err != nil {
+			t.Logf("Close error: %v", err)
+		}
+	}()
+
+	// Set many entries
+	for i := range 100 {
+		if err := fp.Set(context.Background(), fmt.Sprintf("key-%d", i), i, time.Time{}); err != nil {
+			t.Fatalf("Set: %v", err)
+		}
+	}
+
+	// Create context that we'll cancel
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel()
+
+	// Keys should respect context cancellation
+	count := 0
+	for range fp.Keys(ctx, "") {
+		count++
+	}
+
+	// We should have stopped early due to cancellation
+	if count == 100 {
+		t.Error("Keys() should have stopped due to context cancellation")
 	}
 }
 

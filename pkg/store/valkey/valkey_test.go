@@ -3,6 +3,7 @@ package valkey
 import (
 	"context"
 	"fmt"
+	"maps"
 	"os"
 	"testing"
 	"time"
@@ -793,5 +794,280 @@ func TestValkeyPersist_FlushEmpty(t *testing.T) {
 	}
 	if deleted != 0 {
 		t.Errorf("Flush deleted %d entries from empty cache; want 0", deleted)
+	}
+}
+
+func TestValkeyPersist_Keys(t *testing.T) {
+	skipIfNoValkey(t)
+
+	ctx := context.Background()
+	addr := os.Getenv("VALKEY_ADDR")
+	if addr == "" {
+		addr = "localhost:6379"
+	}
+
+	p, err := New[string, string](ctx, "test-cache-keys", addr)
+	if err != nil {
+		t.Fatalf("New: %v", err)
+	}
+	defer func() {
+		if err := p.Close(); err != nil {
+			t.Logf("Close error: %v", err)
+		}
+	}()
+
+	// Set entries with different prefixes
+	entries := map[string]string{
+		"user:alice":   "alice-data",
+		"user:bob":     "bob-data",
+		"user:charlie": "charlie-data",
+		"post:1":       "post-1-data",
+		"post:2":       "post-2-data",
+		"other":        "other-data",
+	}
+
+	for k, v := range entries {
+		if err := p.Set(ctx, k, v, time.Time{}); err != nil {
+			t.Fatalf("Set %s: %v", k, err)
+		}
+	}
+
+	tests := []struct {
+		name   string
+		prefix string
+		want   []string
+	}{
+		{"user prefix", "user:", []string{"user:alice", "user:bob", "user:charlie"}},
+		{"post prefix", "post:", []string{"post:1", "post:2"}},
+		{"other prefix", "other", []string{"other"}},
+		{"no match", "nomatch:", []string{}},
+		{"empty prefix", "", []string{"other", "post:1", "post:2", "user:alice", "user:bob", "user:charlie"}},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			var keys []string
+			for k := range p.Keys(ctx, tt.prefix) {
+				keys = append(keys, k)
+			}
+
+			if len(keys) != len(tt.want) {
+				t.Errorf("Keys() returned %d keys; want %d. Got: %v, Want: %v", len(keys), len(tt.want), keys, tt.want)
+				return
+			}
+
+			// Create map for comparison
+			keyMap := make(map[string]bool)
+			for _, k := range keys {
+				keyMap[k] = true
+			}
+
+			for _, wantKey := range tt.want {
+				if !keyMap[wantKey] {
+					t.Errorf("Keys() missing key %q", wantKey)
+				}
+			}
+		})
+	}
+
+	// Cleanup all test entries
+	for k := range entries {
+		if err := p.Delete(ctx, k); err != nil {
+			t.Logf("Delete error: %v", err)
+		}
+	}
+}
+
+func TestValkeyPersist_Range(t *testing.T) {
+	skipIfNoValkey(t)
+
+	ctx := context.Background()
+	addr := os.Getenv("VALKEY_ADDR")
+	if addr == "" {
+		addr = "localhost:6379"
+	}
+
+	p, err := New[string, string](ctx, "test-cache-range", addr)
+	if err != nil {
+		t.Fatalf("New: %v", err)
+	}
+	defer func() {
+		if err := p.Close(); err != nil {
+			t.Logf("Close error: %v", err)
+		}
+	}()
+
+	// Set entries with different prefixes
+	entries := map[string]string{
+		"user:alice":   "alice-data",
+		"user:bob":     "bob-data",
+		"user:charlie": "charlie-data",
+		"post:1":       "post-1-data",
+		"post:2":       "post-2-data",
+		"other":        "other-data",
+	}
+
+	for k, v := range entries {
+		if err := p.Set(ctx, k, v, time.Time{}); err != nil {
+			t.Fatalf("Set %s: %v", k, err)
+		}
+	}
+
+	tests := []struct {
+		name   string
+		prefix string
+		want   map[string]string
+	}{
+		{"user prefix", "user:", map[string]string{
+			"user:alice":   "alice-data",
+			"user:bob":     "bob-data",
+			"user:charlie": "charlie-data",
+		}},
+		{"post prefix", "post:", map[string]string{
+			"post:1": "post-1-data",
+			"post:2": "post-2-data",
+		}},
+		{"other prefix", "other", map[string]string{
+			"other": "other-data",
+		}},
+		{"no match", "nomatch:", map[string]string{}},
+		{"empty prefix", "", entries},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			result := maps.Collect(p.Range(ctx, tt.prefix))
+
+			if len(result) != len(tt.want) {
+				t.Errorf("Range() returned %d entries; want %d", len(result), len(tt.want))
+				return
+			}
+
+			for k, wantVal := range tt.want {
+				gotVal, found := result[k]
+				if !found {
+					t.Errorf("Range() missing key %q", k)
+					continue
+				}
+				if gotVal != wantVal {
+					t.Errorf("Range() key %q = %q; want %q", k, gotVal, wantVal)
+				}
+			}
+		})
+	}
+
+	// Cleanup all test entries
+	for k := range entries {
+		if err := p.Delete(ctx, k); err != nil {
+			t.Logf("Delete error: %v", err)
+		}
+	}
+}
+
+func TestValkeyPersist_Range_SkipsExpired(t *testing.T) {
+	skipIfNoValkey(t)
+
+	ctx := context.Background()
+	addr := os.Getenv("VALKEY_ADDR")
+	if addr == "" {
+		addr = "localhost:6379"
+	}
+
+	p, err := New[string, string](ctx, "test-cache-range-expired", addr)
+	if err != nil {
+		t.Fatalf("New: %v", err)
+	}
+	defer func() {
+		if err := p.Close(); err != nil {
+			t.Logf("Close error: %v", err)
+		}
+	}()
+
+	// Set entries with different expiry times
+	shortExpiry := time.Now().Add(2 * time.Second)
+	longExpiry := time.Now().Add(1 * time.Hour)
+
+	if err := p.Set(ctx, "expires-soon", "value1", shortExpiry); err != nil {
+		t.Fatalf("Set: %v", err)
+	}
+	if err := p.Set(ctx, "valid-1", "value2", longExpiry); err != nil {
+		t.Fatalf("Set: %v", err)
+	}
+	if err := p.Set(ctx, "valid-2", "value3", time.Time{}); err != nil {
+		t.Fatalf("Set: %v", err)
+	}
+
+	// Wait for short expiry to pass
+	time.Sleep(3 * time.Second)
+
+	// Range should only return valid entries
+	result := maps.Collect(p.Range(ctx, ""))
+
+	if len(result) != 2 {
+		t.Errorf("Range() returned %d entries; want 2 (expired entries should be skipped)", len(result))
+	}
+
+	if _, found := result["expires-soon"]; found {
+		t.Error("Range() should skip expired entries")
+	}
+
+	if val, found := result["valid-1"]; !found || val != "value2" {
+		t.Error("Range() should return valid-1")
+	}
+
+	if val, found := result["valid-2"]; !found || val != "value3" {
+		t.Error("Range() should return valid-2")
+	}
+
+	// Cleanup
+	_ = p.Delete(ctx, "valid-1")      //nolint:errcheck // test cleanup
+	_ = p.Delete(ctx, "valid-2")      //nolint:errcheck // test cleanup
+	_ = p.Delete(ctx, "expires-soon") //nolint:errcheck // test cleanup
+}
+
+func TestValkeyPersist_Keys_ContextCancellation(t *testing.T) {
+	skipIfNoValkey(t)
+
+	ctx := context.Background()
+	addr := os.Getenv("VALKEY_ADDR")
+	if addr == "" {
+		addr = "localhost:6379"
+	}
+
+	p, err := New[string, int](ctx, "test-cache-keys-cancel", addr)
+	if err != nil {
+		t.Fatalf("New: %v", err)
+	}
+	defer func() {
+		if err := p.Close(); err != nil {
+			t.Logf("Close error: %v", err)
+		}
+	}()
+
+	// Set many entries
+	for i := range 100 {
+		if err := p.Set(ctx, fmt.Sprintf("key-%d", i), i, time.Time{}); err != nil {
+			t.Fatalf("Set: %v", err)
+		}
+	}
+
+	// Create context that we'll cancel
+	ctxCancel, cancel := context.WithCancel(context.Background())
+	cancel()
+
+	// Keys should respect context cancellation
+	count := 0
+	for range p.Keys(ctxCancel, "") {
+		count++
+	}
+
+	// We should have stopped early due to cancellation
+	if count == 100 {
+		t.Error("Keys() should have stopped due to context cancellation")
+	}
+
+	// Cleanup
+	for i := range 100 {
+		_ = p.Delete(ctx, fmt.Sprintf("key-%d", i)) //nolint:errcheck // test cleanup
 	}
 }

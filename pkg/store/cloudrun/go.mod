@@ -9,8 +9,8 @@ require (
 )
 
 require (
-	github.com/codeGROOVE-dev/ds9 v0.8.0 // indirect
-	github.com/klauspost/compress v1.18.2 // indirect
+	github.com/codeGROOVE-dev/ds9 v0.8.1 // indirect
+	github.com/klauspost/compress v1.18.3 // indirect
 )
 
 replace github.com/codeGROOVE-dev/fido/pkg/store/datastore => ../datastore

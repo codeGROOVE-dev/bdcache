@@ -2,6 +2,7 @@ package datastore
 
 import (
 	"context"
+	"maps"
 	"os"
 	"testing"
 	"time"
@@ -327,4 +328,187 @@ func TestDatastorePersist_CleanupEmpty(t *testing.T) {
 	if count != 0 {
 		t.Logf("Cleanup count = %d (found existing expired entries)", count)
 	}
+}
+
+func TestDatastorePersist_Keys(t *testing.T) {
+	ctx := context.Background()
+	dp, cleanup := createTestStore[string, string](t, ctx)
+	defer cleanup()
+
+	// Set entries with different prefixes
+	entries := map[string]string{
+		"user:alice":   "alice-data",
+		"user:bob":     "bob-data",
+		"user:charlie": "charlie-data",
+		"post:1":       "post-1-data",
+		"post:2":       "post-2-data",
+		"other":        "other-data",
+	}
+
+	for k, v := range entries {
+		if err := dp.Set(ctx, k, v, time.Time{}); err != nil {
+			t.Fatalf("Set %s: %v", k, err)
+		}
+	}
+
+	tests := []struct {
+		name   string
+		prefix string
+		want   []string
+	}{
+		{"user prefix", "user:", []string{"user:alice", "user:bob", "user:charlie"}},
+		{"post prefix", "post:", []string{"post:1", "post:2"}},
+		{"other prefix", "other", []string{"other"}},
+		{"no match", "nomatch:", []string{}},
+		{"empty prefix", "", []string{"other", "post:1", "post:2", "user:alice", "user:bob", "user:charlie"}},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			var keys []string
+			for k := range dp.Keys(ctx, tt.prefix) {
+				keys = append(keys, k)
+			}
+
+			if len(keys) != len(tt.want) {
+				t.Errorf("Keys() returned %d keys; want %d. Got: %v, Want: %v", len(keys), len(tt.want), keys, tt.want)
+				return
+			}
+
+			// Create map for comparison
+			keyMap := make(map[string]bool)
+			for _, k := range keys {
+				keyMap[k] = true
+			}
+
+			for _, wantKey := range tt.want {
+				if !keyMap[wantKey] {
+					t.Errorf("Keys() missing key %q", wantKey)
+				}
+			}
+		})
+	}
+
+	// Cleanup all test entries
+	for k := range entries {
+		if err := dp.Delete(ctx, k); err != nil {
+			t.Logf("Delete error: %v", err)
+		}
+	}
+}
+
+func TestDatastorePersist_Range(t *testing.T) {
+	ctx := context.Background()
+	dp, cleanup := createTestStore[string, string](t, ctx)
+	defer cleanup()
+
+	// Set entries with different prefixes
+	entries := map[string]string{
+		"user:alice":   "alice-data",
+		"user:bob":     "bob-data",
+		"user:charlie": "charlie-data",
+		"post:1":       "post-1-data",
+		"post:2":       "post-2-data",
+		"other":        "other-data",
+	}
+
+	for k, v := range entries {
+		if err := dp.Set(ctx, k, v, time.Time{}); err != nil {
+			t.Fatalf("Set %s: %v", k, err)
+		}
+	}
+
+	tests := []struct {
+		name   string
+		prefix string
+		want   map[string]string
+	}{
+		{"user prefix", "user:", map[string]string{
+			"user:alice":   "alice-data",
+			"user:bob":     "bob-data",
+			"user:charlie": "charlie-data",
+		}},
+		{"post prefix", "post:", map[string]string{
+			"post:1": "post-1-data",
+			"post:2": "post-2-data",
+		}},
+		{"other prefix", "other", map[string]string{
+			"other": "other-data",
+		}},
+		{"no match", "nomatch:", map[string]string{}},
+		{"empty prefix", "", entries},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			result := maps.Collect(dp.Range(ctx, tt.prefix))
+
+			if len(result) != len(tt.want) {
+				t.Errorf("Range() returned %d entries; want %d", len(result), len(tt.want))
+				return
+			}
+
+			for k, wantVal := range tt.want {
+				gotVal, found := result[k]
+				if !found {
+					t.Errorf("Range() missing key %q", k)
+					continue
+				}
+				if gotVal != wantVal {
+					t.Errorf("Range() key %q = %q; want %q", k, gotVal, wantVal)
+				}
+			}
+		})
+	}
+
+	// Cleanup all test entries
+	for k := range entries {
+		if err := dp.Delete(ctx, k); err != nil {
+			t.Logf("Delete error: %v", err)
+		}
+	}
+}
+
+func TestDatastorePersist_Range_SkipsExpired(t *testing.T) {
+	ctx := context.Background()
+	dp, cleanup := createTestStore[string, string](t, ctx)
+	defer cleanup()
+
+	// Set entries with different expiry times
+	past := time.Now().Add(-1 * time.Hour)
+	future := time.Now().Add(1 * time.Hour)
+
+	if err := dp.Set(ctx, "expired-1", "value1", past); err != nil {
+		t.Fatalf("Set: %v", err)
+	}
+	if err := dp.Set(ctx, "valid-1", "value2", future); err != nil {
+		t.Fatalf("Set: %v", err)
+	}
+	if err := dp.Set(ctx, "valid-2", "value3", time.Time{}); err != nil {
+		t.Fatalf("Set: %v", err)
+	}
+
+	// Range should only return valid entries
+	result := maps.Collect(dp.Range(ctx, ""))
+
+	if len(result) != 2 {
+		t.Errorf("Range() returned %d entries; want 2 (expired entries should be skipped)", len(result))
+	}
+
+	if _, found := result["expired-1"]; found {
+		t.Error("Range() should skip expired entries")
+	}
+
+	if val, found := result["valid-1"]; !found || val != "value2" {
+		t.Error("Range() should return valid-1")
+	}
+
+	if val, found := result["valid-2"]; !found || val != "value3" {
+		t.Error("Range() should return valid-2")
+	}
+
+	// Cleanup
+	_ = dp.Delete(ctx, "valid-1")   //nolint:errcheck // test cleanup
+	_ = dp.Delete(ctx, "valid-2")   //nolint:errcheck // test cleanup
+	_ = dp.Delete(ctx, "expired-1") //nolint:errcheck // test cleanup
 }

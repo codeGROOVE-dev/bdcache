@@ -8,8 +8,8 @@ require (
 )
 
 require (
-	github.com/klauspost/compress v1.18.2 // indirect
-	golang.org/x/sys v0.39.0 // indirect
+	github.com/klauspost/compress v1.18.3 // indirect
+	golang.org/x/sys v0.40.0 // indirect
 )
 
 replace github.com/codeGROOVE-dev/fido/pkg/store/compress => ../compress
